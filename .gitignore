@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 构建产物（本仓库只收录技能本体，zip 由 package_skill.py 另行生成）
+dist/
+*.zip
