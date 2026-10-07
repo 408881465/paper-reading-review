@@ -45,22 +45,44 @@ FIELD_ALIASES = {
     "poc":     {"poc", "批评点", "poc/rpp", "poc·rpp", "rpp",
                 "待探讨的相关问题", "待探讨问题",
                 "批评点/待探讨的相关问题", "批评点/待探讨问题",
-                "批评点与待探讨问题"},
+                # ↓ 以下为 norm_header() 归一化后的键（斜杠、顿号在归一化时
+                # 会被剥离，故必须写成剥离后的形态，否则自己生成的表头
+                # 自己认不出——2026-10-07 回归过一次。
+                "批评点待探讨的相关问题", "批评点待探讨问题",
+                "批评点与待探讨问题", "批评点与待探讨的相关问题"},
 }
 
 # 主题聚类只对这几栏做词频统计
 CLUSTER_FIELDS = ["spl", "rof", "cpl", "gap"]
+
+# n-gram 窗口上限与展示上限。
+# MAX_GRAM 要大：只有让完整短语生成出来，才判得出哪些短词只是它的碎片。
+# DISPLAY_MAX 要小：主题标签是两个到六个字的词，不是整句套话。
+MAX_GRAM = 12
+DISPLAY_MAX = 6
 
 # 缺栏时的严重程度：critical = 没有它就没法做综述
 REQUIRED = ["author", "year", "spl", "rof"]
 RECOMMENDED = ["cpl", "gap", "rfw", "poc"]
 
 # 中文停用词：高频且无主题区分度
+#
+# 这里只放「功能词与学术套话」，不放「模型 / 框架 / 量表」这类可能是真主题的
+# 普通名词——过度过滤会把真主题一起删掉，比留下噪声更糟。
+# 需要按自己的语料增补时，用 `--stopwords <文件>` 传入自定义列表（每行一个词）；
+# 被误滤的真主题用 `--keep <文件>` 救回。硬编码在源码里的词表没法覆盖所有语料。
 STOPWORDS = set(
     "研究 分析 本文 一个 及其 通过 进行 对于 关于 以及 但是 因此 所以 "
     "可以 能够 需要 应该 不同 相关 方面 问题 方法 结果 结论 本研究 表明 "
     "指出 提出 发现 存在 具有 成为 一种 一些 这些 那些 其中 如果 由于 "
     "同时 此外 目前 主要 重要 影响 作用 关系 变化 发展 水平 程度 影响 "
+    # —— 学术套话：跨语料高频复现，但不构成主题 ——
+    "已有研究 已有文献 现有研究 现有文献 前人研究 相关研究 大量研究 多数研究 "
+    "研究表明 研究发现 研究指出 研究认为 研究者 学者 学界 领域内 "
+    "缺乏 不足 尚未 难以 较少 多数 部分 近年 国内 国外 国内外 "
+    "综述 梳理 考察 关注 聚焦 采用 使用 基于 构建 建立 提出 分析 验证 "
+    "检验 探索 揭示 机制 作用 关系 差异 特征 维度 指标 标准 建议 "
+    "因此 但是 而且 从而 进而 使得 导致 体现 反映 表明 显示 认为 强调 "
     "the and for that with this from are was were has have not but which "
     "they their its been also such these those using used study research "
     "paper article results method methods analysis data".split()
@@ -68,15 +90,19 @@ STOPWORDS = set(
 
 # 通用研究套话碎片：跨词边界切出的 n-gram（如「研究已」「响新闻价」），
 # 无主题区分度，聚类时应排除。
+#
+# ⚠️ 这份词表只放**通用**套话。旧版本里混入了「新闻价 / 闻价值 / 新闻价值研」
+# 这类只对作者当时那篇测试文献成立的碎片——词表一旦过拟合到某一份语料，
+# 换个主题就会出现两头的错：该滤的滤不掉（实测换成教育类语料后，
+# 前 9 名候选里有 6 个是「已有研究提出」式的碎片），
+# 而真主题「新闻价值」反被误杀。
+# 按自己的语料补充时请用 --stopwords <文件>，不要去改源码。
 GENERIC_FRAGMENTS = set(
-    "研究 研究已 研究存 研究存 在 存在 已有 有研究 没有 不能 不足 缺乏 "
+    "研究 研究已 研究存 存在 已有 有研究 没有 不能 不足 缺乏 "
     "影响 影响因素 因素 考察 检验 检验了 表明 指出 显示 证明 报告 "
     "分析 分析了 使用 采用 引入 建立 构建 提出 探讨 讨论 关注 重视 "
-    "研究已 研究存在 影响未 影响新闻 响新闻 机制未 未验证 未考察 "
-    "研究已 研究方法 方法研究 研究框架 框架 维度 层面 角度 视角 "
-    "价值研究 价值研 新闻价 闻价值 闻价 值研 值研究 新闻价值研 "
-    "研究已 研究积累 研究已积累 已积累 积累 缺乏对 机制未 机制 "
-    "存在研究 已建立 未验证 未整合 未明确 未量化 未考察 不明确 "
+    "机制 机制未 未验证 未考察 未整合 未明确 未量化 不明确 "
+    "方法研究 研究框架 框架 维度 层面 角度 视角 价值研究 "
     "较为 相对 更为 更加 十分 非常 尤其 其中 以上 以下 之间 之后 之前".split()
 )
 
@@ -88,6 +114,38 @@ GENERIC_PREFIXES = (
     "研究", "分析", "影响", "考察", "检验", "方法", "结果", "存在",
     "缺乏", "提出", "采用", "使用", "建立", "发现", "表明", "机制",
 )
+
+# 学术套话前缀：出现即从文本里切掉，不是「生成后再过滤」。
+# 例：「已有研究关注教师胜任力」若不先切掉「已有研究」，滑窗会切出
+# 「已有研究关注」「研究关」「究关注」这类跨短语碎片，而它们彼此不是子串、
+# 频次又各不相同，去重与极大重复两条规则都抓不住。
+# 先切再滑窗，碎片根本不生成——这是治本的位置。
+# 只列多字套话，不列「框架 / 机制 / 维度」这类可能是真主题的普通名词。
+BOILERPLATE_PREFIXES = (
+    "已有研究", "已有文献", "现有研究", "现有文献", "前人研究", "相关研究",
+    "大量研究", "多数研究", "研究表明", "研究发现", "研究指出", "研究认为",
+    # 「研究已积累」「研究已十分丰富」这类句式：研究对象词本身无主题信息，
+    # 若不切分会产出「值研究已积累」这类跨短语碎片（2026-10-07 实测）。
+    # 只切「研究已」这个紧邻搭配，不切单独的「已」，以免误伤「已知条件」等词。
+    "研究已",
+)
+
+# 通用动词：出现在短语开头时纯属交代动作，不是主题的一部分，同样先切掉。
+# 刻意不含「关注」「发现」——它们能构成真主题（关注度 / 发现学习）。
+GENERIC_VERB_PREFIXES = (
+    "考察", "提出", "分析", "探讨", "讨论", "揭示", "梳理", "综述",
+    "检验", "验证", "建议", "指出", "表明", "认为", "强调", "采用", "使用",
+)
+
+# 用于切断 n-gram 的边界符：必须是非 CJK、非字母的字符，才能被
+# tokenize 里的 [\u4e00-\u9fff]{2,} 切开。
+_BOUNDARY = "·"
+
+# 短语级虚词边界。只切「的」——它在主题标签里几乎不出现，且是最常见的
+# 跨短语碎片来源（「素养的构成维度」→「素养的」「构成维度」）。
+# 刻意不切「地」（会毁掉「地区差异」）和「了/着/过/得」（会毁掉
+# 「了解」「显著」「过度」「得到」这类词）。
+_PARTICLE_BOUNDARY = "的"
 
 # 中文双字词抽取用：停用的单字
 _STOP_CHARS = set("的了和与或在是有为对从被把将及其之乎者也之")
@@ -119,20 +177,33 @@ def resolve_columns(fieldnames):
 
 # ---------------------------------------------------------------- 分词
 
-def tokenize(text: str):
-    """中文取 2–6 字滑窗（无需分词库），英文取单词。
+def strip_boilerplate(text: str) -> str:
+    """把学术套话与短语级虚词替换成边界符，防止 n-gram 跨短语生成。
+
+    这是「治本」的一步：碎片不是在生成之后滤掉的，而是根本不生成。
+    """
+    for phrase in BOILERPLATE_PREFIXES + GENERIC_VERB_PREFIXES:
+        if phrase in text:
+            text = text.replace(phrase, _BOUNDARY)
+    return text.replace(_PARTICLE_BOUNDARY, _BOUNDARY)
+
+
+def tokenize(text: str, max_size: int = MAX_GRAM):
+    """中文取 2–MAX_GRAM 字滑窗（无需分词库），英文取单词。
 
     中文不做真分词——滑窗在主题聚类场景下够用，且零依赖。
-    取到 6 字是为了让「新闻价值研究」这类完整短语有机会生成，
-    从而在 dedupe 中吞掉它的碎片（见 dedupe_ngrams）。
+    窗口开到 MAX_GRAM（12）而不是 6，是为了让**完整的重复短语**有机会生成：
+    短语长度超过窗口时，滑窗只能切出「考察了课堂互动」「察了课堂互动模」……
+    这种同长度、互相错位的碎片，谁也不是谁的子串，包含关系规则一个都抓不住。
+    生成长 gram 只用于判定「谁是碎片」，展示时仍只保留 ≤ DISPLAY_MAX 字的。
     """
     tokens = []
     for word in re.findall(r"[a-zA-Z]{3,}", text.lower()):
         if word not in STOPWORDS:
             tokens.append(word)
 
-    for run in re.findall(r"[\u4e00-\u9fff]{2,}", text):
-        for size in range(2, 7):
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", strip_boilerplate(text)):
+        for size in range(2, min(max_size, len(run)) + 1):
             for i in range(len(run) - size + 1):
                 gram = run[i:i + size]
                 if gram[0] in _STOP_CHARS:
@@ -141,13 +212,76 @@ def tokenize(text: str):
     return tokens
 
 
-def dedupe_ngrams(ranked, ratio=0.6):
-    """抑制被更长同频词包住的子串碎片。
+def mark_dominated(candidates, max_len=DISPLAY_MAX):
+    """标出「总是作为更长同频短语的一部分出现」的候选。
+
+    g 与 g' 频次相同且 g 是 g' 的子串，说明 g 的每一次出现都被 g' 覆盖，
+    g 没有独立信息量，是碎片。例：语料里反复出现「考察了课堂互动模式」，
+    则「考察了课堂」「察了课堂互动」等碎片频次都与它相同，只应保留最长的那条。
+
+    只有长度 ≤ max_len 的短语才有资格「支配」别的候选。超过展示上限的长句
+    （如「考察了课堂互动模式」）本来就永远不会被输出，让它把「课堂互动模式」
+    这样的好主题一并压掉是净损失。
+
+    不必枚举所有超串：所有「在语料中真实出现、长度 ≤ MAX_GRAM」的超串都已被
+    tokenize 生成并留在 candidates 里，所以只要反向枚举 g 自己的子串即可。
+    """
+    counts = dict(candidates)
+    dominated = set()
+    for gram, count in counts.items():
+        if len(gram) > max_len:
+            continue
+        for i in range(len(gram)):
+            for j in range(i + 2, len(gram) + 1):
+                sub = gram[i:j]
+                if sub != gram and counts.get(sub) == count:
+                    dominated.add(sub)
+    return dominated
+
+
+def mark_misaligned(candidates, min_len=3):
+    """标出错位碎片：滑窗在重复短语上切出的「缺首字/缺尾字」片段。
+
+    `mark_dominated` 靠子串关系判定，但滑窗在长重复短语上会切出
+    **互不为子串的错位碎片**：语料反复出现「深度学习在教学中的应用」时，
+    「深度学习在教」「度学习在教学」「学习在教学中」三条频次相同、
+    彼此互不包含，包含规则一个都抓不住（2026-10-07 实测）。
+
+    判据：若存在 g' 使 g 等于 g' 去掉首字或尾字、且 g' 与 g **同频或更高频**，
+    则 g 是 g' 被切歪的一段——它的每一次出现都属于某个更完整的短语，
+    不携带独立信息。g' 频次更高时（「度学习在教」← 「深度学习在教」同为
+    4，而「深度学习」为 8）更容易成立；同频时也成立，因为二者本就是
+    同一个重复短语的不同切法。
+
+    只删短的那条（g），保留完整的那条（g'）。
+    """
+    counts = dict(candidates)
+    dominated = set()
+    for gram, count in counts.items():
+        if len(gram) < min_len:
+            continue
+        for other, other_count in counts.items():
+            if other == gram or other_count < count:
+                continue
+            # other 比 gram 长 1 字，且去掉首字或尾字后与 gram 完全重合
+            if len(other) == len(gram) + 1 and (
+                other[1:] == gram or other[:-1] == gram
+            ):
+                dominated.add(gram)
+                break
+    return dominated
+
+
+def dedupe_ngrams(ranked, ratio=0.6, top_n=None):
+    """抑制被更长短语包住的子串碎片。
 
     滑窗分词会产出「新闻价值 / 闻价值研 / 价值研究」这类互相包含的碎片，
     全量列出只会淹没真正的主题词。规则：若 a 是 b 的真子串，且 b 的频次
     不低于 a 的 ratio 倍，则丢弃 a——b 更完整且几乎同样常见。
     容忍度而非严格相等，是因为长短语在语料里天然略少。
+
+    top_n 在裁剪之后才生效：先剪枝再取前 N。否则前 N 名会被碎片占满，
+    真正的主题词排在 N 名之外永远看不到。
     """
     kept = []
     for word, count in ranked:
@@ -157,16 +291,39 @@ def dedupe_ngrams(ranked, ratio=0.6):
         )
         if not dominated:
             kept.append((word, count))
-    return kept
+    return kept[:top_n] if top_n else kept
 
 
-def cluster_hint(rows, top_n=25, min_count=2):
+def expand_blocked(phrases):
+    """把套话短语展开成它的全部长度 ≥2 子串，返回集合。
+
+    滑窗分词会把「已有研究」切成「已有研」「有研究」等子串；只按整词相等
+    过滤必然漏掉它们（实测：「已有研究」进了停用词表，「已有研」却仍排在
+    候选第一名）。展开后一次集合查找即可覆盖所有边界碎片。
+
+    代价是可能连带滤掉真主题的一部分——用 --keep 白名单可以救回来。
+    """
+    out = set()
+    for phrase in phrases:
+        for i in range(len(phrase)):
+            for j in range(i + 2, len(phrase) + 1):
+                out.add(phrase[i:j])
+    return out
+
+
+def cluster_hint(rows, top_n=25, min_count=2, extra_stopwords=(), keepwords=()):
     """基于「研究结果 / 现有文献综述 / 现有文献批评 / 空白」四栏做词频统计，
     给出候选主题词。
 
     min_count=2：只出现一次的词不构成「反复出现的模式」，无法充当主题，
     对聚类无贡献。频次太低时应回头检查 RCOS 是否填得太笼统。
+
+    extra_stopwords / keepwords：来自 --stopwords / --keep，只影响本次运行。
+    把「本项目语料的套话」外置成文件，而不是继续往源码里的硬编码词表塞条目
+    ——旧词表已经混进过只对某一篇测试文献成立的碎片。
     """
+    blocked = expand_blocked(STOPWORDS | set(extra_stopwords) | GENERIC_FRAGMENTS)
+    keep = set(keepwords)
     counter = Counter()
     for row in rows:
         for field in CLUSTER_FIELDS:
@@ -174,49 +331,62 @@ def cluster_hint(rows, top_n=25, min_count=2):
             if value:
                 counter.update(tokenize(value))
 
-    # 过滤停用词与通用研究套话碎片
-    ranked = []
-    for w, c in counter.most_common():
-        if w in STOPWORDS or w in GENERIC_FRAGMENTS:
+    # 先按频次粗筛，**不做语义词过滤**：mark_dominated 要靠完整的重复短语
+    # 才能判定谁是碎片。若先把「考察了课堂互动模式」滤掉，它的碎片
+    # 「考察了课堂互动」就失去覆盖它们的超串，反而会被当成独立主题留下来。
+    ranked_all = [(w, c) for w, c in counter.most_common() if c >= min_count]
+    dominated = mark_dominated(ranked_all)
+    misaligned = mark_misaligned(ranked_all)
+
+    topics = []
+    for w, c in ranked_all:
+        if w not in keep:
+            if w in dominated or w in misaligned:
+                continue
+            if w in blocked:
+                continue
+            # 「研究已积累」：套话前缀 + 套话余部
+            if any(w.startswith(p) and w[len(p):] in GENERIC_FRAGMENTS
+                   for p in GENERIC_PREFIXES):
+                continue
+        if len(w) > DISPLAY_MAX:
             continue
-        # 「影响未」的碎片「响未」这类：本身是套话短语的子串，一并剔除
-        if any(w != g and w in g for g in GENERIC_FRAGMENTS):
-            continue
-        # 「研究已积累」：套话前缀 + 套话余部
-        if any(w.startswith(p) and w[len(p):] in GENERIC_FRAGMENTS
-               for p in GENERIC_PREFIXES):
-            continue
-        if c < min_count:
-            continue
-        ranked.append((w, c))
-    return dedupe_ngrams(ranked)[:top_n]
+        topics.append((w, c))
+    return dedupe_ngrams(topics, top_n=top_n)
 
 
-def imbalance_warning(rows, mapping, threshold=3):
-    """一树吊死检查：某个现有文献综述主题下只挂 1 篇，而另一主题挂 ≥threshold 篇。
+def imbalance_warning(rows, threshold=3):
+    """一树吊死检查：某一位作者在 RCOS 中反复独占。
 
-    这是主题聚类失败的信号——正确聚类应让各主题文献数大致均衡。
+    判据取自 `review-workflow.md` 第 3.4 节「同一作者不得在相邻段落反复独占篇幅」
+    ——所以检查的是**作者列**的分布，不是「现有文献综述」文本是否恰好相同。
+    旧实现拿 spl 原文做精确字符串计数，自由文本几乎必然全不重复，
+    于是 singles 有、heavy 没有，检查永远不触发（等于没有这个检查）。
+
+    另外补一条：整栏文本完全一致，说明没在逐篇填写，聚类无从做起。
     """
-    counts = []
-    for row in rows:
-        value = (row.get("spl") or "").strip()
-        if value:
-            counts.append((value[:40], 1))
+    warnings = []
+    if not rows:
+        return warnings
 
-    if len(counts) < 2:
-        return []
+    authors = [r.get("author") for r in rows if r.get("author")]
+    if authors:
+        freq = Counter(authors)
+        top_author, top_count = freq.most_common(1)[0]
+        if top_count >= max(threshold, len(rows) / 2) and len(freq) > 1:
+            warnings.append(
+                "一树吊死预警：作者「%s」独占 %d/%d 篇。综述须按主题重组，"
+                "同一作者应被打散进各主题，不得反复独占篇幅——请回 RCOS 重新聚类。"
+                % (top_author, top_count, len(rows))
+            )
 
-    freq = Counter(name for name, _ in counts)
-    singles = [n for n, c in freq.items() if c == 1]
-    heavy = [n for n, c in freq.items() if c >= threshold]
-    if singles and heavy:
-        return [
-            "主题聚类可能失衡：%d 个现有文献综述主题仅挂 1 篇，"
-            "而 %d 个主题挂 ≥%d 篇。请回 RCOS 重新按主题聚类，"
-            "避免『洗衣店接衣单』式罗列。"
-            % (len(singles), len(heavy), threshold)
-        ]
-    return []
+    spls = [r.get("spl") for r in rows if r.get("spl")]
+    if len(spls) >= 3 and len(set(spls)) == 1:
+        warnings.append(
+            "「现有文献综述」栏 %d 篇文本完全相同，疑似整列复制粘贴、未逐篇填写。"
+            "该栏是主题聚类的原料，请逐篇写具体内容。" % len(spls)
+        )
+    return warnings
 
 
 # ---------------------------------------------------------------- 主流程
@@ -275,6 +445,14 @@ def check(path):
     print(f"文件: {path}")
     print(f"文献数: {len(rows)}")
 
+    # 空表：只有表头（或表头被误当数据）时，任何「逐行检查」都不会报错，
+    # 会直接输出「✅ 检查通过」——而校验器的职责正是拦住「没填表就写综述」。
+    if not rows:
+        problems.append(
+            "RCOS 中没有任何文献行（只读到表头）。请先用 `init` 生成模板并逐篇填写，"
+            "再运行校验；空表通过检查会导致综述无米下锅。"
+        )
+
     # 列映射
     missing_cols = [f for f in REQUIRED if f not in mapping]
     if missing_cols:
@@ -309,7 +487,7 @@ def check(path):
         warnings.append("仅 2 篇文献：主题聚类样本不足，建议改用形态 C（对比评述）。")
 
     # 一树吊死
-    for msg in imbalance_warning(rows, mapping):
+    for msg in imbalance_warning(rows):
         warnings.append(msg)
 
     # 覆盖率统计
@@ -329,18 +507,33 @@ def check(path):
     return rows, mapping, problems, warnings
 
 
-def print_cluster(rows):
+def load_stopwords(path):
+    """读取补充停用词：每行一个词，# 开头为注释。"""
+    words = set()
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            word = line.strip()
+            if word and not word.startswith("#"):
+                words.add(word)
+    return words
+
+
+def print_cluster(rows, extra_stopwords=(), keepwords=()):
     print()
     print("=" * 60)
     print("主题聚类提示（来自「研究结果 / 现有文献综述 / 现有文献批评 / 空白」四栏）")
     print("=" * 60)
-    ranked = cluster_hint(rows)
+    ranked = cluster_hint(rows, extra_stopwords=extra_stopwords,
+                          keepwords=keepwords)
     if not ranked:
         print("（无可用词频——四栏可能均为空）")
         return
     print("候选主题词（按复现度排序）:")
     for word, count in ranked:
         print("  %-14s %2d" % (word, count))
+    print()
+    print("注：靠后的长候选可能是跨短语切出的碎片（如「价值与受众研」），")
+    print("    人工归纳时以靠前的短词为准；本项目特有的套话可用 --stopwords 排除。")
 
     distinct = len(ranked)
     print()
@@ -356,7 +549,9 @@ def print_cluster(rows):
 def cmd_init(path):
     header = ["序号", "作者", "年份", "标题", "来源", "现有文献综述", "现有文献批评",
           "空白", "研究结果", "未来研究建议", "批评点/待探讨问题"]
-    with open(path, "w", newline="", encoding="utf-8") as fh:
+    # utf-8-sig 写入 BOM：与仓库自带的 rcos-template.csv 保持一致，
+    # 否则用户在 Windows Excel 里打开会出现中文表头乱码。
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
         csv.writer(fh).writerow(header)
     print("已生成 RCOS 模板: %s" % path)
     print("填写要点：读完当天录入；「现有文献综述」「研究结果」两栏"
@@ -371,6 +566,10 @@ def main() -> int:
     p_rcos = sub.add_parser("rcos", help="校验 RCOS 并给出聚类提示")
     p_rcos.add_argument("csv_path", help="RCOS CSV 路径")
     p_rcos.add_argument("--check-only", action="store_true", help="只做完备性检查")
+    p_rcos.add_argument("--stopwords", metavar="FILE",
+                        help="补充停用词文件（每行一个，# 开头为注释）")
+    p_rcos.add_argument("--keep", metavar="FILE",
+                        help="白名单文件：其中的词一律保留，不被停用词规则滤掉")
 
     p_init = sub.add_parser("init", help="生成空白 RCOS 模板")
     p_init.add_argument("output", help="输出 CSV 路径")
@@ -384,10 +583,24 @@ def main() -> int:
         print("文件不存在: %s" % args.csv_path, file=sys.stderr)
         return 1
 
+    extra_stopwords = ()
+    if args.stopwords:
+        if not os.path.exists(args.stopwords):
+            print("停用词文件不存在: %s" % args.stopwords, file=sys.stderr)
+            return 1
+        extra_stopwords = load_stopwords(args.stopwords)
+
+    keepwords = ()
+    if args.keep:
+        if not os.path.exists(args.keep):
+            print("白名单文件不存在: %s" % args.keep, file=sys.stderr)
+            return 1
+        keepwords = load_stopwords(args.keep)
+
     rows, _mapping, problems, warnings = check(args.csv_path)
 
     if not args.check_only and rows:
-        print_cluster(rows)
+        print_cluster(rows, extra_stopwords=extra_stopwords, keepwords=keepwords)
 
     print()
     print("=" * 60)

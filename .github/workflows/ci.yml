@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 语法检查
+        run: python -m compileall -q scripts
+      - name: 安装测试依赖
+        run: python -m pip install --upgrade pip pytest
+      - name: 运行测试
+        run: python -m pytest tests/ -q
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查文档引用的文件与章节确实存在
+        run: |
+          python - <<'PY'
+          import re, sys, pathlib
+          root = pathlib.Path(".")
+          docs = list(pathlib.Path("references").glob("*.md")) + [
+              pathlib.Path("SKILL.md"), pathlib.Path("README.md")]
+          bad = []
+
+          # (1) 被反引号引用的仓库内路径必须存在
+          for f in docs:
+              for ref in re.findall(r"`([A-Za-z0-9_./-]+\.(?:md|py|csv|txt))`",
+                                    f.read_text(encoding="utf-8")):
+                  if "/" in ref and not (root / ref).exists():
+                      bad.append(f"{f}: 引用了不存在的文件 {ref}")
+
+          # (2) 「xxx.md 第 N 节」必须指向真实存在的章节
+          sections = {}
+          for f in pathlib.Path("references").glob("*.md"):
+              nums = {m.group(1) for m in
+                      re.finditer(r"^#{2,3}\s+(\d+(?:\.\d+)?)",
+                                  f.read_text(encoding="utf-8"), re.M)}
+              sections[f.name] = nums
+          for f in docs:
+              text = f.read_text(encoding="utf-8")
+              for target, num in re.findall(
+                      r"`?([a-z-]+\.md)`?[^。\n]{0,12}?第\s*([\d.]+)\s*节", text):
+                  if target in sections and num not in sections[target]:
+                      bad.append(f"{f}: 引用 {target} 第 {num} 节，但该节不存在")
+
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          print("文档引用检查通过")
+          PY

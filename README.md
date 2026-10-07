@@ -87,6 +87,13 @@ python3 scripts/build_review.py init rcos.csv
 python3 scripts/build_review.py rcos rcos.csv
 ```
 
+`extract_pdf_text.py` 的退出码：`0` 正常、`1` 打不开或缺依赖、`2` 多数页无文本层
+（扫描件，需先 OCR）。**扫码件本脚本不代做 OCR**，只会报警——空文本不等于
+「原文没写」，别据空文件写 review。
+
+`build_review.py rcos` 的退出码：`0` 无阻断问题、`1` 有阻断问题（如空表、缺必需栏）。
+聚类提示只是词频参考，可用 `--stopwords` / `--keep` 增删词表。
+
 ## 目录结构
 
 ```
@@ -114,7 +121,8 @@ paper-reading-review/
   压缩取舍顺序，不要逐句微调（单轮仅压 50–150 字）。
 - 理论建构型／政策类文献（**无数据**）不适用实证研究的批评点路径，
   改查四条：框架来源是否交代、分层判准是否声明、概念是否同名不同义、
-  策略与框架的映射是否建立。
+  策略与框架的映射是否建立。完整说明见
+  `references/review-workflow.md` 第 2.5 节。
 
 ## 许可
 

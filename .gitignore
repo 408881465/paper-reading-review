@@ -12,6 +12,10 @@ venv/
 .idea/
 *.swp
 
-# 构建产物（本仓库只收录技能本体，zip 由 package_skill.py 另行生成）
+# 构建产物（本仓库只收录技能本体）
 dist/
 *.zip
+
+# 测试与工具缓存
+.pytest_cache/
+.ruff_cache/
