@@ -71,11 +71,17 @@ agent_created: true
 | 中小学 AI 教育以外的**通用**文献综述 | **本技能** |
 | 通用深度调研（非学术文献） | `deep-research-pro` |
 | 写申报书其余字段（研究设计、目标、方法等） | `keti-shenbaoshu` |
+| 中小学 AI 教育专题**综述成稿**（本技能产出的是素材与解码） | `k12-ai-edu-review` |
+| 申报书「国内外研究现状」章节的段落化 | `keti-shenbaoshu` |
 
 本技能管**「已持有的 PDF → review 文档」**这一段，不负责检索。若用户还没有
 文献，先让对应检索技能补齐，再回到本技能。
 
-## 三种产出形态
+**出口**：本技能产出的是「可回指的解码与主题化素材」（含 GB/T 7714 参考文献表）；
+把它写成申报书可用的「国内外研究现状」正文，交 `keti-shenbaoshu`；
+写成中小学 AI 教育领域的完整综述稿，交 `k12-ai-edu-review`。
+
+## 四种产出形态
 
 先判断形态再动手，**判断依据是输入**：
 
@@ -84,11 +90,18 @@ agent_created: true
 | 1 篇 | **A 单篇深度导读** | `assets/single-review-template.md` | **详版 + 速览两份** |
 | 3+ 篇同主题 | **B 多篇主题综述** | `assets/multi-review-template.md` | 综述稿 |
 | 2+ 篇可对比（关心谁对谁错） | **C 多篇对比评述** | `assets/comparative-review-template.md` | 评述稿 |
+| **30+ 篇，或需要持续增量追加** | **D 批量分层处理** | `references/batch-workflow.md` | 登记表 + 分层产出 + 主题综述 |
 
 **形态 A 默认产出两份文件**：`<简称>-导读.md`（完整解码）与
 `<简称>-速览.md`（一页纸决策工具）。速览不是详版的缩写——它回答的是
 「值不值得现在读原文」，落点是判定与取舍，不铺陈解码过程。
 详见 `references/review-workflow.md` 第 2.0 节。
+
+**形态 D 不是并列的第四种写法，而是一层外壳**：文献过百、总页数上千，
+或用户说「后期还会加新文献」时，先走 `references/batch-workflow.md` 的
+「登记 → 判重 → 抽文本 → 分档 → 派活」，档位内部再调用 A/B/C 的模板。
+**不要**对上百篇逐篇出详版——既跑不完，也没人读；T3 只入表是合法取舍，
+但必须在总报告里写明「未逐篇精读，仅按题录与摘要定位」。
 
 多篇输入且用户没说清要哪种时，**问一句再动手**——B 和 C 的文档结构完全不同，
 猜错要重写。
@@ -120,7 +133,7 @@ python3 scripts/extract_pdf_text.py <pdf路径> -o /tmp/<name>.txt
 脚本只删**真正的页码**（页首页尾、与页序保持恒定偏移的裸数字），
 正文与表格里的裸数字、参考文献的 DOI/URL 一律保留，供回指核对。
 
-### 第 1 步：逐篇解码（三种形态共用）
+### 第 1 步：逐篇解码（四种形态共用）
 
 对每一篇文献，按 `references/reading-codes.md` 的**章节速查表**通读全文，
 逐条记录十个结构性密码（提问 / 现有文献综述 / 现有文献批评 / 空白 / 理论依据 /
@@ -188,7 +201,7 @@ CSV 结构见 `assets/rcos-template.csv`（表头即中文密码名；校验器�
 
 **成稿时对照 SKILL.md 开头的密码对照表，把模板里的缩写全部换成中文名。**
 
-### 第 4b 步：值得关注的引用文献（三形态共用，不可跳过）
+### 第 4b 步：值得关注的引用文献（四形态共用，不可跳过）
 
 在原文参考文献表**之前**加一节，分两组：
 
@@ -228,6 +241,9 @@ CSV 结构见 `assets/rcos-template.csv`（表头即中文密码名；校验器�
 | **异议优于遗漏** | 宁可指出不同意见，也不要漏掉相关文献 |
 | **引用文献不编造** | 「值得关注的引用文献」只处理原文**已引用**的。未引用而对立者，写「原文未引用，无法核对」 |
 | **不给检索建议** | 不写「建议进一步查阅 XX」——检索是 `cnki-skills` / `global-biblio-base` 的事 |
+| **档位化取舍** | 文献多时按 T1/T2/T3 分档投入精力；**T3 只入表不是偷懒**，但不得把题录包装成读过的证据 |
+| **缺失照实写** | 中文实践类论文常无空白、无理论依据、无相反发现；写「作者未提出」是发现，编出来是事故 |
+| **增量不重算** | 新文献入库只追加：已解码的卡、已填的 RCOS 行、已写的综述段落不重写；结论若被新文献改变，必须显式写出 |
 
 ## 目录结构
 
@@ -237,16 +253,23 @@ paper-reading-review/
 ├── references/
 │   ├── reading-codes.md      # 10+4 个密码的定义、位置、推导链、章节速查
 │   ├── review-workflow.md    # 三形态骨架、详版+速览、引用文献节、自检清单
+│   ├── batch-workflow.md     # 形态 D：分档判准、登记表、增量同步、实践类论文适配
 │   └── cited-literature.md   # 支柱性文献 / 需要对话的文献：判据与格式
 ├── assets/
 │   ├── single-review-template.md     # 形态 A 详版模板
 │   ├── quick-review-template.md      # 形态 A 速览模板（一页纸）
 │   ├── multi-review-template.md      # 形态 B 模板
 │   ├── comparative-review-template.md# 形态 C 模板
+│   ├── decode-card-template.md       # 形态 D：T2/专著章节用一页解码卡
+│   ├── triage-registry-template.csv  # 形态 D：文献登记表（18 栏）
 │   └── rcos-template.csv             # RCOS 整合表模板
-└── scripts/
-    ├── extract_pdf_text.py   # PDF → 带页码标记纯文本
-    └── build_review.py       # RCOS 校验 + 主题聚类提示
+├── scripts/
+│   ├── extract_pdf_text.py   # PDF → 带页码标记纯文本
+│   ├── sync_corpus.py        # 形态 D：判重、增量同步、登记表状态
+│   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
+│   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单
+│   └── build_review.py       # RCOS 校验 + 主题聚类提示
+└── tests/                    # pytest：脚本行为与 SKILL.md 纪律的回归网
 ```
 
 ## 资源索引用途
@@ -263,3 +286,8 @@ paper-reading-review/
 | 排查写坏了 | `review-workflow.md` 第 7 节 |
 | 转 PDF 文本 | `scripts/extract_pdf_text.py --help` |
 | 校验 RCOS / 生成模板 | `scripts/build_review.py --help` |
+| 文献上百篇、要分档读 | `references/batch-workflow.md`（形态 D 全流程） |
+| 判重 / 增量追加新文献 | `scripts/sync_corpus.py --help` |
+| 批量抽文本、处理扫描件 | `scripts/batch_extract.py --help` |
+| 成稿机械自检（缩写/字数/空话） | `scripts/lint_review.py --help` |
+| T2 篇目与专著章节怎么记 | `assets/decode-card-template.md` |
