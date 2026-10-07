@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2026 tommy
+
+本仓库的**代码与文档**（scripts/、assets/、tests/、.github/ 及本文件）
+适用 MIT 许可证，详见下方条款。
+
+⚠️ **方法论不在授权范围内**
+本技能使用的「阅读密码表」方法论（含十个结构性密码与四个策略性密码的划分、
+推导链结构）源自：
+
+    Philip Chong Ho Shon《会读才会写：导向论文写作的文献阅读技巧》
+    （How to Read Journal Articles in the Social Sciences）
+    韩鹃译，重庆大学出版社
+
+该书著作权归原作者与出版社所有。本仓库仅收录**对该方法论的软件实现**
+（工作流脚本、文档说明与模板），不包含原书内容，亦不代表原书作者的授权。
+如需使用、翻译或再版该方法论，请另行取得原作者与出版社许可。
+
+---
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
