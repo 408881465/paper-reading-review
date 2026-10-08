@@ -411,3 +411,37 @@ def test_detect_printed_offset_shares_criterion_with_extractor():
 
     noisy = [f"正文\n2020.12" for _ in range(4)]
     assert be.detect_printed_offset(noisy, ex) is None
+
+
+def test_image_is_routed_to_need_ocr_not_other_extractor(project, capsys):
+    """★图片是 **OCR 候选**，不是"没有抽取器"。
+
+    batch-workflow §3 的状态机写「需OCR（**图片型**，先 OCR 再用 attach 回流）」，
+    而「待其它提取器」的定义是"暂无抽取器的格式（如 pptx）"。
+    实测（2026-10-08，课题库里 6 个真实 .png）：旧实现把两者混为一谈，
+    于是图片全部落在「待其它提取器」——按状态机找「需OCR」行的人**找不到图片**，
+    报告里的「需 OCR：N 篇」**永远不含图片**。
+    """
+    reg, outdir, src = project
+    (src / "扫描页.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"fake" * 20)
+    sc.main(["scan", reg, "--source", str(src)])
+    be.main(["--registry", reg, "--outdir", outdir])
+
+    row = _read(reg)[0]
+    assert row["解码状态"] == "需OCR", f"图片应走需OCR，实际 {row['解码状态']}"
+    assert "OCR" in row["备注"]
+
+    # 汇总与报告必须把它算进去（否则数字与登记表不符）
+    out = capsys.readouterr().out
+    assert "需OCR 1" in out, f"图片型的需OCR未并入汇总：{out[-200:]}"
+    assert "需 OCR：1" in open(os.path.join(outdir, "_提取报告.md"),
+                              encoding="utf-8").read()
+
+
+def test_unsupported_format_still_goes_to_other_extractor(project):
+    """图片之外的未知格式仍走「待其它提取器」——两条支线不能混。"""
+    reg, outdir, src = project
+    (src / "课件.pptx").write_bytes(b"PK\x03\x04fake")
+    sc.main(["scan", reg, "--source", str(src)])
+    be.main(["--registry", reg, "--outdir", outdir])
+    assert _read(reg)[0]["解码状态"] == "待其它提取器"

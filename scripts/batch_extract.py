@@ -37,12 +37,15 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 try:
-    from sync_corpus import REGISTRY_FIELDS, load_registry, save_registry
+    from sync_corpus import (REGISTRY_FIELDS, IMG_EXTS,
+                             load_registry, save_registry)
+    globals()["_IMG_EXTS"] = IMG_EXTS
 except ImportError:                                   # 退路：允许单独拷走使用
     REGISTRY_FIELDS = ["编号", "文件名", "标题", "第一作者", "年份", "来源类型",
                        "页数", "字符数", "sha1", "源路径", "文本路径", "主题分类",
                        "档位", "纳入判定", "相关度", "解码状态", "产出文件", "备注"]
     load_registry = save_registry = None
+    _IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
 # 允许中文、字母数字、下划线、点、连字符与加号（"AI+工程"这类标题要保留原样）
 _SAFE = re.compile(r"[^\w\u4e00-\u9fff.+\-]+")
@@ -306,6 +309,7 @@ def main(argv=None) -> int:
     os.makedirs(args.outdir, exist_ok=True)
     dup_skipped = 0
     todo_docx = []
+    img_need_ocr = 0      # 图片型：登记为需OCR，不在此处抽取
 
     todo = []
     for row in rows:
@@ -317,8 +321,24 @@ def main(argv=None) -> int:
         ext = os.path.splitext(src)[1].lower()
         if ext not in (".pdf", ".docx", ".doc"):
             if row.get("解码状态") in ("", "未处理"):
-                row["解码状态"] = "待其它提取器"
-                row["备注"] = (row.get("备注", "") + "；该格式暂无抽取器，需其它工具").strip("；")
+                if ext in _IMG_EXTS:
+                    # ★图片是 **OCR 候选**，不是"没有抽取器"。
+                    #   batch-workflow §3 的状态机写得很清楚：
+                    #   「需OCR（**图片型**，先 OCR 再用 attach 回流）」，
+                    #   而 §3.1 给「待其它提取器」的定义是"暂无抽取器的格式（如 pptx）"。
+                    #   旧实现把两者混为一谈，于是：
+                    #     · 按状态机找「需OCR」行的人**找不到图片**；
+                    #     · 报告里的「需 OCR：N 篇」**永远不含图片**。
+                    #   2026-10-08 用课题库里的 6 个真实 .png 实测：全部落在 待其它提取器。
+                    row["解码状态"] = "需OCR"
+                    img_need_ocr += 1
+                    row["备注"] = (row.get("备注", "") +
+                                   "；图片型，需先 OCR（paddleocr-cli: ocr auto <文件>）"
+                                   "再用 sync_corpus attach 回流").strip("；")
+                else:
+                    row["解码状态"] = "待其它提取器"
+                    row["备注"] = (row.get("备注", "") +
+                                   "；该格式暂无抽取器，需其它工具").strip("；")
             continue
         if ext in (".docx", ".doc"):
             # .docx 不走 PDF 那条路（没有页码概念，回指基准是章节名）。
@@ -455,7 +475,8 @@ def main(argv=None) -> int:
         "# 批量抽文本报告", "",
         f"- 本次处理：{len(todo)} 篇",
         f"- 成功：{results.get('ok', 0)}",
-        f"- 需 OCR：{results.get('需OCR', 0)}",
+        f"- 需 OCR：{results.get('需OCR', 0) + img_need_ocr}"
+        + (f"（其中图片 {img_need_ocr} 篇，待外部 OCR 后 attach 回流）" if img_need_ocr else ""),
         f"- 打不开：{results.get('打不开', 0)}",
         f"- 文本层版本重复对：{len(dup_pairs)}", "",
     ]
@@ -468,10 +489,15 @@ def main(argv=None) -> int:
         body += ["## 需要处理的篇目", ""] + [f"- {n}" for n in notes] + [""]
     with open(report, "w", encoding="utf-8") as fh:
         fh.write("\n".join(body))
-    print(f"\n完成：成功 {results.get('ok', 0)}，需OCR {results.get('需OCR', 0)}，"
+    # ★图片型的「需OCR」不在 results 里（它们没进抽取队列），必须单独并入；
+    #   否则报告写「需 OCR：0」而登记表里明明有需 OCR 的行
+    #   （2026-10-08 用课题库里 6 个真实 .png 实测到这一不符）。
+    n_need_ocr = results.get("需OCR", 0) + img_need_ocr
+    _img_note = f"（其中图片 {img_need_ocr} 篇）" if img_need_ocr else ""
+    print(f"\n完成：成功 {results.get('ok', 0)}，需OCR {n_need_ocr}{_img_note}，"
           f"打不开 {results.get('打不开', 0)}；报告 {report}")
     print("提示：需 OCR 的篇目不要跳过——空文本会被下游误读成「原文没写」。")
-    return 2 if results.get("需OCR") else 0
+    return 2 if (results.get("需OCR") or img_need_ocr) else 0
 
 
 if __name__ == "__main__":
