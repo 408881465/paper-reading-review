@@ -188,6 +188,12 @@ _CHAPTER_CARD_MARK = ("章节级解码卡", "本卡所解的章")
 #   而卡正文含「作者提出的主要问题」，于是落到下面的结构兜底被判成 `A` ——
 #   一页卡被套上详版的 **1500 字下限**，三张卡（1017／1129／1392 字）全部报"低于下限"。
 _CARD_MARK = ("## 0. 题录", "## 1. 结构性密码", "## 2. 策略性密码", "## 3. 与本课题的接口")
+
+# 总报告（`report`）的**正文特征**。★这是**第三处**"形态判定靠文件名"的补丁
+# （前两处：章节卡、一页卡）。2026-10-09 实测：把总报告按自由命名后判成 `B`，
+# 于是套上 B 的 800–20000 区间，而非 report 的 1200–∞——**检查被放松**。
+# 总报告模板有两处别处不会出现的节名，可作稳定特征。
+_REPORT_MARK = ("覆盖与精读声明", "一致性三查结果", "# 总报告")
 _FENCE_BLOCK = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 
@@ -287,6 +293,9 @@ def guess_form(path: str, text: str) -> str:
     if "对比" in name or "评述" in name:
         return "C"
     if "总报告" in name:
+        return "report"
+    # ★内容兜底（见 _REPORT_MARK 处说明）
+    if any(m in text for m in _REPORT_MARK):
         return "report"
     if "综述" in name:
         return "B"

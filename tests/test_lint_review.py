@@ -428,3 +428,23 @@ def test_full_review_not_mistaken_for_card():
             "| 密码 | 内容 |\n|---|---|\n| 作者提出的主要问题 | x |\n\n"
             "## 三、策略性密码\n\n## 四、本文评述的判断\n")
     assert lr.guess_form("T1-L0030-作者-主题.md", body) == "A"
+
+
+def test_report_detected_from_content_when_filename_is_free_form():
+    """★第三处"形态判定靠文件名"的补丁。
+
+    2026-10-09 实测：把总报告按自由命名（去掉"总报告"三字）后判成 `B`，
+    于是套上 B 的 800–20000 区间而非 report 的 1200–∞——**检查被放松**。
+    总报告模板有两处别处不会出现的节名，可作稳定特征。
+    """
+    body = ("# 跨学科协同批次\n\n## 一、覆盖与精读声明\n\n| 项 | 数量 |\n|---|---|\n"
+            "| T1 | 3 |\n\n## 二、主题格局\n\n## 五、一致性三查结果\n\n| 查项 | 结论 |\n")
+    assert lr.guess_form("跨学科协同批次.md", body) == "report"
+
+
+def test_other_forms_not_mistaken_for_report():
+    """B/C/A 不得被报告特征误判。"""
+    b = "# 主题综述：x\n\n## 一、综述摘要\n\n## 三、现有文献的主题格局\n"
+    assert lr.guess_form("跨学科协同研究.md", b) == "B"
+    a = "# 单篇深度导读：x\n\n## 一、引用信息\n\n## 二、结构性密码\n\n| 作者提出的主要问题 | y |\n"
+    assert lr.guess_form("某篇研究.md", a) == "A"
