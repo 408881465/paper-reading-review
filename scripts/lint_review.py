@@ -171,6 +171,14 @@ _HTML_ENTITY = re.compile(
 #    ★前后一律用显式 ASCII 判据，**不能用 \w 或 \b**——Python 的 \w 包含中文，
 #    `\1协同` 这种「紧贴汉字」的泄漏恰恰是最典型的形态，用 \w 会整类漏掉。
 _BACKREF_LEAK = re.compile(r"(?<![A-Za-z0-9_\\])\\[1-9](?![A-Za-z0-9_])")
+
+# 章节级卡的**内容特征**。为什么不能只看文件名（2026-10-08 用真实产出实测）：
+# 同一份 3417 字的内容，文件名带「章节」→ 判 chapter-card（上限 5000）**通过**；
+# 把文件名里的「章节」去掉 → 判 card（上限 2500），**报超限 917 字**。
+# card 与 chapter-card 的上限差一倍，误判的代价很实在；而产出命名是自由的，
+# 技能文档此前也从没要求章节卡必须叫「章节解码卡」。
+# 取真实章节卡的 H1 用词：抽查 20 份一页卡，含这两个特征的 **0 份**（无假阳性）。
+_CHAPTER_CARD_MARK = ("章节级解码卡", "本卡所解的章")
 _FENCE_BLOCK = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 
@@ -258,6 +266,9 @@ def guess_form(path: str, text: str) -> str:
     # >60 页的专著/学位论文按章解码，规格另计。要求"章节"与"卡/解码"同时出现——
     # 只看"章节"会把「研究现状章节素材.md」这类普通文档误判成章节级卡（实测踩过）。
     if "章节" in name and ("卡" in name or "解码" in name):
+        return "chapter-card"
+    # ★内容特征兜底：文件名是自由的，字数区间却差一倍（见 _CHAPTER_CARD_MARK 处说明）
+    if any(m in text[:1500] for m in _CHAPTER_CARD_MARK):
         return "chapter-card"
     if "解码卡" in name:
         return "card"

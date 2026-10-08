@@ -364,3 +364,37 @@ def test_lone_ampersand_is_not_an_entity():
     res = lr.lint_text("x.md", "# x\n\nA & B 合作，R&D 投入。\n", form="B",
                        min_chars=0, max_chars=10 ** 9)
     assert not [e for e in res["errors"] if "HTML 实体" in e]
+
+
+# ---------------------------------------------------------------- 章节卡的形态识别
+# 2026-10-08 用 137 份真实历史产出跑规模 lint 时查出：
+# 同一份 3417 字的内容，文件名带「章节」→ chapter-card（上限 5000）通过；
+# 去掉「章节」→ card（上限 2500），报「超限 917 字」。**内容一字未改。**
+
+def test_chapter_card_detected_from_filename():
+    assert lr.guess_form("L0150-王新燕-章节解码卡.md", "") == "chapter-card"
+    assert lr.guess_form("L0068-红皮书章节卡.md", "") == "chapter-card"
+
+
+def test_chapter_card_detected_from_content_when_filename_is_free_form():
+    """★文件名是自由的；字数区间却差一倍，故必须有内容特征兜底。
+
+    真实章节卡的 H1 用「章节级解码卡」（抽查 20 份一页卡，含此特征的 0 份）。
+    """
+    body = "# 章节级解码卡（形态 D · 专著／学位论文用）\n\n正文。\n"
+    assert lr.guess_form("L0150-王新燕-美国中小学工程教育.md", body) == "chapter-card"
+
+
+def test_plain_card_is_not_mistaken_for_chapter_card():
+    """一页卡不得因内容兜底被误判成章节卡（那会放宽上限一倍）。"""
+    body = "# 单篇解码卡（形态 D · T2／专著章节用）\n\n| 项目 | 内容 |\n"
+    assert lr.guess_form("L0179-Cook-协同教学模式-解码卡.md", body) == "card"
+
+
+def test_same_content_same_verdict_regardless_of_filename():
+    """★核心断言：同一份内容，命名不同不得导致一个通过、一个超限。"""
+    body = "# 章节级解码卡（形态 D · 专著／学位论文用）\n\n" + "正文内容。" * 1200
+    for name in ["L0150-章节解码卡.md", "L0150-解码卡.md", "L0150-随便什么名.md"]:
+        assert lr.guess_form(name, body) == "chapter-card", name
+        res = lr.lint_text(name, body, form="auto", min_chars=0, max_chars=10 ** 9)
+        assert not [e for e in res["errors"] if "字数" in e], f"{name} 被误报超限"
