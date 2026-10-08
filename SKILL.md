@@ -253,7 +253,7 @@ paper-reading-review/
 ├── references/
 │   ├── reading-codes.md      # 10+4 个密码的定义、位置、推导链、章节速查
 │   ├── review-workflow.md    # 三形态骨架、详版+速览、引用文献节、自检清单
-│   ├── batch-workflow.md     # 形态 D：分档判准、登记表、增量同步、实践类论文适配
+│   ├── batch-workflow.md     # 形态 D：分档判准、登记表、增量同步、实践类论文适配、交付前一致性三查
 │   └── cited-literature.md   # 支柱性文献 / 需要对话的文献：判据与格式
 ├── assets/
 │   ├── single-review-template.md     # 形态 A 详版模板
@@ -267,7 +267,7 @@ paper-reading-review/
 │   ├── extract_pdf_text.py   # PDF → 带页码标记纯文本
 │   ├── sync_corpus.py        # 形态 D：判重、增量同步、登记表状态
 │   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
-│   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单
+│   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单、产物卫生
 │   └── build_review.py       # RCOS 校验 + 主题聚类提示
 └── tests/                    # pytest：脚本行为与 SKILL.md 纪律的回归网
 ```
