@@ -561,3 +561,25 @@ def test_form_a_requires_all_fourteen_codes_including_strategy_codes():
     body2 = "# x\n\n## 一、导读摘要\n\n" + allc
     res2 = lr.lint_text("x-导读.md", body2, form="A", min_chars=0, max_chars=10 ** 9)
     assert not [e for e in res2["errors"] if "缺密码栏" in e], "14 个齐备却被报缺"
+
+
+def test_comparative_review_without_matrix_is_flagged():
+    """★对比评述删掉「对比矩阵」必须报警——它是本形态的定义性结构。
+
+    2026-10-09 实测：删掉整节「二、对比矩阵」（878 字符）后 lint 仍报 OK——
+    因为 C 的内容签名需命中 2 处，删掉矩阵后还剩「共识与分歧」「对比综述」，
+    **仍判 C**，而 C 没有任何结构检查。
+
+    ★只加这一条，**不**给 B/C 加"必填节"检查：实测 137 份历史产出中，
+    主题3 把结构重组成"三问"（并把必填节名括注在标题里）、主题4 用
+    "争议主轴／可比维度对照"，都是**合法的重组**，刚性检查会误伤。
+    而「对比矩阵」是 SKILL.md 形态表写明的 C 形态定义特征。
+    """
+    with_matrix = ("# 对比评述：x\n\n## 一、对比综述\n\n## 二、对比矩阵\n\n| 维度 | A | B |\n|---|---|---|\n"
+                   "| 研究问题 | | |\n\n## 六、共识与分歧\n\n## 七、方法论评价\n")
+    res = lr.lint_text("x-对比评述.md", with_matrix, form="C", min_chars=0, max_chars=10 ** 9)
+    assert not [w for w in res["warnings"] if "对比矩阵" in w], "有矩阵却报缺"
+
+    without = with_matrix.replace("## 二、对比矩阵\n\n| 维度 | A | B |\n|---|---|---|\n| 研究问题 | | |\n\n", "")
+    res2 = lr.lint_text("x-对比评述.md", without, form="C", min_chars=0, max_chars=10 ** 9)
+    assert [w for w in res2["warnings"] if "对比矩阵" in w], "缺矩阵竟未报警"
