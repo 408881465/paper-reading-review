@@ -398,3 +398,33 @@ def test_same_content_same_verdict_regardless_of_filename():
         assert lr.guess_form(name, body) == "chapter-card", name
         res = lr.lint_text(name, body, form="auto", min_chars=0, max_chars=10 ** 9)
         assert not [e for e in res["errors"] if "字数" in e], f"{name} 被误报超限"
+
+
+# ---------------------------------------------------------------- 一页卡的内容识别
+# 2026-10-09 用形态 D 端到端跑批时查出：产出命名是自由的，按 `T2-L0110-作者-主题.md`
+# 这样命名很自然，文件名不含"解码卡"；而卡正文含「作者提出的主要问题」，
+# 于是落到结构兜底被判成 A —— 一页卡被套上详版的 1500 字下限，
+# 三张卡（1017／1129／1392 字）全部报"低于下限"。
+
+def test_card_detected_from_content_when_filename_is_free_form():
+    """★一页卡的正文特征：阿拉伯数字小节（`## 0. 题录` / `## 3. 与本课题的接口`）。
+
+    与详版模板的中文数字小节（`## 一、导读摘要`）不混。
+    """
+    body = ("# 单篇解码卡\n\n## 0. 题录\n\n| 项目 | 内容 |\n|---|---|\n"
+            "| 编号 | L0110 |\n\n## 1. 结构性密码\n\n"
+            "| 密码 | 内容 |\n|---|---|\n| 作者提出的主要问题 | x |\n\n"
+            "## 2. 策略性密码\n\n## 3. 与本课题的接口\n")
+    # 文件名不含"解码卡"
+    assert lr.guess_form("T2-L0110-杨鹏-计算思维模型.md", body) == "card"
+    res = lr.lint_text("T2-L0110-杨鹏-计算思维模型.md", body,
+                       form="auto", min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res["errors"] if "字数" in e], "一页卡被套上了详版的字数下限"
+
+
+def test_full_review_not_mistaken_for_card():
+    """详版模板用中文数字小节，不得被内容兜底误判成 card。"""
+    body = ("# 单篇深度导读\n\n## 一、导读摘要\n\n## 二、结构性密码\n\n"
+            "| 密码 | 内容 |\n|---|---|\n| 作者提出的主要问题 | x |\n\n"
+            "## 三、策略性密码\n\n## 四、本文评述的判断\n")
+    assert lr.guess_form("T1-L0030-作者-主题.md", body) == "A"

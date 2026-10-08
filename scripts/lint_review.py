@@ -179,6 +179,15 @@ _BACKREF_LEAK = re.compile(r"(?<![A-Za-z0-9_\\])\\[1-9](?![A-Za-z0-9_])")
 # 技能文档此前也从没要求章节卡必须叫「章节解码卡」。
 # 取真实章节卡的 H1 用词：抽查 20 份一页卡，含这两个特征的 **0 份**（无假阳性）。
 _CHAPTER_CARD_MARK = ("章节级解码卡", "本卡所解的章")
+
+# 一页卡（`card`）的**正文特征**——两套模板的小节编号体系不同，可靠区分：
+#   一页卡模板：`## 0. 题录` / `## 1. 结构性密码` / `## 2. 策略性密码` / `## 3. 与本课题的接口`（阿拉伯数字）
+#   详版模板：  `## 一、导读摘要` / `## 二、研究定位` …（中文数字）
+# 为什么必须有内容兜底（2026-10-09 用形态 D 端到端跑批时查出）：
+#   产出命名是自由的，按 `T2-L0110-作者-主题.md` 这样命名很自然，**文件名不含"解码卡"**；
+#   而卡正文含「作者提出的主要问题」，于是落到下面的结构兜底被判成 `A` ——
+#   一页卡被套上详版的 **1500 字下限**，三张卡（1017／1129／1392 字）全部报"低于下限"。
+_CARD_MARK = ("## 0. 题录", "## 1. 结构性密码", "## 2. 策略性密码", "## 3. 与本课题的接口")
 _FENCE_BLOCK = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 
@@ -271,6 +280,9 @@ def guess_form(path: str, text: str) -> str:
     if any(m in text[:1500] for m in _CHAPTER_CARD_MARK):
         return "chapter-card"
     if "解码卡" in name:
+        return "card"
+    # ★内容兜底：一页卡的正文特征（见 _CARD_MARK 处说明）
+    if sum(1 for m in _CARD_MARK if m in text) >= 2:
         return "card"
     if "对比" in name or "评述" in name:
         return "C"

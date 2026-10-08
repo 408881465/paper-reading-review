@@ -340,3 +340,43 @@ def test_skill_own_boilerplate_does_not_top_the_cluster_list():
     # 只要求"有内容词存活"，不指定具体词形：聚类会合并成更长的短语。
     assert any(("教学" in w or "实践" in w or "课程" in w or "协同" in w) for w in words), \
         f"真主题词被挤掉了：{words}"
+
+
+# ---------------------------------------------------------------- §5.3 列集一致性
+# 2026-10-09 用形态 D 端到端跑批时查出：§5.3 规定的 RCOS 最小列集是 **20 列**，
+# 而校验器只认 12 列、模板只有 11 列、init 里还硬编码了第三份 11 列——
+# 其中就有 §5.3 点名"**不可省**"的 `理论依据`，写进去会被报「未识别的列（将忽略）」。
+
+SPEC_5_3 = ["编号", "作者", "年份", "标题", "来源", "现有文献综述", "现有文献批评",
+            "空白", "理论依据", "研究结果", "一致的研究发现", "相反的研究发现",
+            "作者给出的答案", "未来研究建议", "批评点", "待探讨的相关问题",
+            "明显的遗漏点", "能否理顺", "主题分类", "一句话定位"]
+
+
+def test_every_column_of_the_5_3_spec_is_recognised():
+    """★§5.3 列集里的每一列都必须被 `FIELD_ALIASES` 认得。
+
+    不认得的列会被报「未识别的列（将忽略）」——等于工具在劝用户删掉那一列。
+    """
+    known = set()
+    for aliases in FIELD_ALIASES.values():
+        known |= set(aliases)
+    missing = [c for c in SPEC_5_3 if c not in known]
+    assert not missing, f"§5.3 列集里这些列不被识别：{missing}"
+
+
+def test_theory_column_is_recommended_not_required():
+    """`理论依据` 按 §5.3 是"不是必需栏，但不可省"——故入建议栏而非必需栏。"""
+    assert "rat" in _bm.RECOMMENDED
+    assert "rat" not in _bm.REQUIRED
+
+
+def test_init_and_shipped_template_agree_on_columns(tmp_path):
+    """★三处表头必须是同一份：§5.3 文档、`assets/rcos-template.csv`、`init` 生成的。
+
+    此前三处各写一份（20／11／11 列），合并与对账时会错列。
+    """
+    out = tmp_path / "tpl.csv"
+    _bm.cmd_init(str(out))
+    got = out.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+    assert got == SPEC_5_3, f"init 生成的表头与 §5.3 不符：{got}"
