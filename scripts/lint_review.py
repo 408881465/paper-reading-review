@@ -74,7 +74,7 @@ DOC_FORM_SKIP = {"chars", "banned", "gap-rat", "laundry", "locator",
                  "codes", "merged", "limits"}
 
 ALL_RULES = ("abbr", "chars", "banned", "gap-rat", "laundry", "locator",
-             "codes", "merged", "limits")
+             "codes", "merged", "limits", "hygiene")
 
 # 一页速览与解码卡是压缩件，不必十码齐备；详版与综述要求齐备
 FORMS_REQUIRING_ALL_CODES = {"A"}
@@ -92,6 +92,26 @@ _YEAR_CITE = re.compile(r"[（(]\s*\d{4}[a-z]?\s*[）)]")
 _LOCATOR = re.compile(r"(?:p\.\s*\d+|第\s*\d+\s*[页节]|（\s*第\s*\d+\s*页\s*）)")
 _MERGED = re.compile(r"(?:研究|分析|探讨)了?.{2,40}(?:并|且|同时)发现")
 _PRAISE = re.compile(r"本文评述")
+
+# ---- hygiene：脚本产物污染（2026-10-08 实战，两类都会静默混进正文） ----
+# ① HTML 实体：`&#x7684;`（＝「的」）。某些库/工具把非 ASCII 转义后未回转。
+#    正文里出现即为污染，无正当用途。
+_HTML_ENTITY = re.compile(r"&#x?[0-9A-Fa-f]{2,6};")
+# ② 反斜杠引用字面泄漏：`re.sub` 的替换体写成 r"\1" + text（而非函数）时，
+#    `\1` 会被当字面量输出。特征：`\数字` 紧贴汉字，或独占行首/行尾。
+#    正则讨论通常写在行内代码里，故检查前先剥掉代码块与行内代码，避免假警报
+#    （假警报的代价见 DOC_FORM_SKIP 处说明：人一旦忽略 lint 输出，它就等于不存在）。
+#    ★前后一律用显式 ASCII 判据，**不能用 \w 或 \b**——Python 的 \w 包含中文，
+#    `\1协同` 这种「紧贴汉字」的泄漏恰恰是最典型的形态，用 \w 会整类漏掉。
+_BACKREF_LEAK = re.compile(r"(?<![A-Za-z0-9_\\])\\[1-9](?![A-Za-z0-9_])")
+_FENCE_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+
+
+def strip_code(text: str) -> str:
+    """剥掉围栏代码块与行内代码，只留正文——用于「污染」类检查。"""
+    return _INLINE_CODE.sub("", _FENCE_BLOCK.sub("", text))
+
 
 
 # ---------------------------------------------------------------- 工具
@@ -172,6 +192,19 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
     errors, warnings, infos = [], [], []
     chars = count_cjk(text)
     sections = split_sections(text)
+
+    # 0) 产物卫生：脚本污染（HTML 实体 / 反斜杠引用字面泄漏）。
+    #    这两类不经人手，是自动化改写留下的垃圾，任何形态下都是错误（故不受 doc 豁免）。
+    if "hygiene" not in off:
+        body = strip_code(text)
+        ents = _HTML_ENTITY.findall(body)
+        if ents:
+            errors.append(f"HTML 实体残留 {len(ents)} 处（{'、'.join(sorted(set(ents))[:4])}）："
+                          "多为脚本把非 ASCII 转义后未回转，应还原为原字符")
+        leaks = _BACKREF_LEAK.findall(body)
+        if leaks:
+            errors.append(f"反斜杠引用字面泄漏 {len(leaks)} 处（{'、'.join(sorted(set(leaks))[:4])}）："
+                          "多为 re.sub 替换体写成 r\"\\1\"+text 而非函数，已把 \\1 当字面量输出")
 
     # 1) 字数区间
     if "chars" not in off:

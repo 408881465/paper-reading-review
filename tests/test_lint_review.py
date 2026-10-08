@@ -186,3 +186,53 @@ def test_chapter_word_in_ordinary_filename_is_not_a_chapter_card():
     """回归：「研究现状章节素材.md」讲的是"章节素材"，不是章节级解码卡。"""
     assert lr.guess_form("08_课题素材/研究现状章节素材.md", "") != "chapter-card"
     assert lr.guess_form("L0150_王新燕-章节解码卡.md", "") == "chapter-card"
+
+
+# ---------------------------------------------------------------- hygiene
+# 2026-10-08：自动化改写留下的两类垃圾，人眼极难发现（详见 references/batch-workflow.md §8.4）
+
+def _hygiene_errors(text, form="B", **kw):
+    res = lr.lint_text("x.md", text, form=form, min_chars=0, max_chars=10 ** 9, **kw)
+    return [e for e in res["errors"] if "HTML 实体" in e or "字面泄漏" in e]
+
+
+def test_html_entity_is_error():
+    """脚本把非 ASCII 转义成 &#x7684; 后未回转，会静默混进正文。"""
+    errs = _hygiene_errors("# 标题\n\n这里有个&#x7684;实体残留。\n")
+    assert any("HTML 实体残留" in e and "&#x7684;" in e for e in errs)
+
+
+def test_backslash_reference_leak_is_error():
+    """re.sub 替换体写成 r\"\\1\"+text（而非函数）时，\\1 被当字面量输出。"""
+    errs = _hygiene_errors("# 标题\n\n\\1协同过程指标观测表\n")
+    assert any("反斜杠引用字面泄漏" in e for e in errs)
+
+
+def test_backslash_leak_tight_against_chinese_is_caught():
+    """★关键回归：Python 的 \\w 包含中文，用 \\w 做前后判据会整类漏掉
+    「\\1 紧贴汉字」——而这恰是泄漏最典型的形态（本规则第一版就栽在这里）。"""
+    for text in ("# 标题\n\n\\1协同过程指标观测表\n",   # \\1 后紧贴汉字
+                 "# 标题\n\n标题\\1内容\n",             # 前后都紧贴汉字
+                 "# 标题\n\n\\1 有空格\n"):             # 独占行首
+        assert _hygiene_errors(text), f"未检出：{text!r}"
+
+
+def test_inline_code_and_fence_are_exempt_from_hygiene():
+    """正则讨论写在代码里是正当用法，不得假警报
+    （假警报会让整份 lint 输出被无视，等于没有 lint）。"""
+    text = ('# 标题\n\n正确写法是 `re.sub(r"(\\w)", r"\\1", s)`。围栏里也一样：\n\n'
+            "```python\nre.sub(r\"(\\w)\", r\"\\1\", s)\n```\n")
+    assert not _hygiene_errors(text)
+
+
+def test_doc_form_still_checks_hygiene():
+    """★hygiene 不受 doc 豁免：污染在任何形态下都是错误，与"文档要引用禁用词"不同。"""
+    res = lr.lint_text("references/x.md", "# 标题\n\n污染&#x4EE5;。\n",
+                       form="doc", min_chars=0, max_chars=10 ** 9)
+    assert any("HTML 实体残留" in e for e in res["errors"])
+
+
+def test_skip_hygiene_turns_it_off():
+    res = lr.lint_text("x.md", "# 标题\n\n污染&#x4EE5;。\n", form="B",
+                       min_chars=0, max_chars=10 ** 9, skip=["hygiene"])
+    assert not [e for e in res["errors"] if "HTML 实体" in e]
