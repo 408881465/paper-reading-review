@@ -375,6 +375,25 @@ def cmd_init(args) -> int:
     if os.path.exists(path) and not args.force:
         print(f"已存在，未覆盖：{path}（要重建请加 --force）", file=sys.stderr)
         return 1
+    if os.path.exists(path) and args.force:
+        # ★覆盖**非空**登记表会销毁「编号 ↔ 文件」的绑定，必须警告。
+        #   为什么严重：编号是**扫描顺序派生**的（`L{序号:04d}`），而技能纪律说它是
+        #   **身份字段**（§3「行一旦写入就不再删改身份字段」），产出文件名、RCOS 表、
+        #   解码卡里到处嵌着它。实测（2026-10-09）：三个文件登记为 L0001/L0002/L0003，
+        #   加入一个**排序在前**的新文件后重建，编号**整体后移一位**——
+        #   于是所有按旧编号写的产出都指向了别的文献，而 `init --force` **毫无提示**。
+        try:
+            _fields, old_rows = load_registry(path)
+        except Exception:                                   # noqa: BLE001
+            old_rows = []
+        if old_rows:
+            print(f"⚠️  即将覆盖非空登记表（{len(old_rows)} 行）：{path}", file=sys.stderr)
+            print("    ★这会**销毁全部「编号 ↔ 文件」绑定**：编号由扫描顺序派生，"
+                  "语料里增删文件会使后续编号整体位移，", file=sys.stderr)
+            print("      按旧编号命名的产出（如 `T1-L0030-…md`）、RCOS 行、解码卡都会指错文献。",
+                  file=sys.stderr)
+            print("    → 新增文献请改用**增量** `scan`（旧行编号保持不变，新行追加编号）；"
+                  "确要重建请先备份并按新表逐处更新引用。", file=sys.stderr)
     save_registry(path, REGISTRY_FIELDS, [])
     print(f"已建空登记表：{path}（{len(REGISTRY_FIELDS)} 栏）")
     return 0

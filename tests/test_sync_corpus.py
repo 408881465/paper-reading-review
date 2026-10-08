@@ -425,3 +425,55 @@ def test_scan_twice_in_sequence_has_no_false_conflict(tmp_path):
     before = _read(reg)
     sc.main(["scan", reg, "--source", str(src)])
     assert _read(reg) == before, "重复扫描不该改动登记表"
+
+
+def test_force_init_warns_before_destroying_id_bindings(tmp_path, capsys):
+    """★覆盖非空登记表会销毁「编号 ↔ 文件」绑定，必须警告。
+
+    编号是**扫描顺序派生**的，而技能纪律说它是**身份字段**；产出文件名、RCOS、
+    解码卡里到处嵌着它。实测（2026-10-09）：三个文件登记为 L0001/L0002/L0003，
+    加入一个**排序在前**的新文件后重建 → 编号**整体后移一位**，
+    于是按旧编号写的产出全部指错文献——而 `init --force` **毫无提示**。
+    """
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    _write(src / "甲.pdf")
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+
+    capsys.readouterr()
+    assert sc.main(["init", reg, "--force"]) == 0
+    err = capsys.readouterr().err
+    assert "编号" in err and "增量" in err, f"覆盖非空表未给出编号绑定警告：{err!r}"
+
+    # 空表（或无表）时不吵
+    capsys.readouterr()
+    sc.main(["init", reg, "--force"])
+    assert "销毁全部" not in capsys.readouterr().err
+
+
+def test_incremental_scan_keeps_existing_ids_stable(tmp_path):
+    """★增量的正确性：新增文件**不得**改变既有行的编号。
+
+    这是 §4 协议的核心性质，也是"不要重建登记表"这条纪律的依据。
+    """
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    # ★内容必须各不相同：内容相同会被 sha1 判重跳过（技能行为正确），
+    #   那样测试就测不到"编号稳定性"了。
+    _write(src / "b.pdf", "内容-b")
+    _write(src / "d.pdf", "内容-d")
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+    before = {r["文件名"]: r["编号"] for r in _read(reg)}
+
+    # 加一个**排序在前**的新文件，用**增量** scan
+    _write(src / "a.pdf", "内容-a")
+    sc.main(["scan", reg, "--source", str(src)])
+    after = {r["文件名"]: r["编号"] for r in _read(reg)}
+
+    for name, rid in before.items():
+        assert after[name] == rid, f"增量同步改变了既有编号：{name} {rid} → {after[name]}"
+    assert "a.pdf" in after and after["a.pdf"] not in before.values(), "新文件未获得新编号"
