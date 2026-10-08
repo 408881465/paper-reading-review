@@ -89,9 +89,66 @@ _FENCE = re.compile(r"^```", re.MULTILINE)
 # 「张三（2020）」这类以作者开头的段落 = 洗衣店接衣单的典型句式
 _AUTHOR_LEAD = re.compile(r"^\s*[\u4e00-\u9fff]{2,4}(?:等)?\s*[（(]\s*\d{4}\s*[）)]")
 _YEAR_CITE = re.compile(r"[（(]\s*\d{4}[a-z]?\s*[）)]")
-_LOCATOR = re.compile(r"(?:p\.\s*\d+|第\s*\d+\s*[页节]|（\s*第\s*\d+\s*页\s*）)")
+# 可回指标记。除页码外，还必须认「章节名回指」——batch-workflow.md §5.1 第 2 条
+# 明确规定：**没有页码标注时就回指章节名**（页码被抽坏、或学位论文前段本无页码时）。
+# 旧实现只认 p.N / 第N页节，于是**按 §5.1 合规写的稿子会被警告"可回指 0 处"**
+# （2026-10-08 用三篇真实文献实测：L0041 页码抽坏、L0074 无页码，只能章节名回指）。
+_LOCATOR = re.compile(
+    r"(?:p\.\s*\d+"                       # p.14
+    r"|第\s*[0-9]+\s*[页节]"                  # 第 3 页 / 第 2 节
+    r"|第\s*[一二三四五六七八九十]+\s*节"           # 第 二 节（中文数字）
+    r"|[「“\"][^」”\"]{2,24}[」”\"]\s*(?:一节|节|部分)"  # 「研究背景」一节
+    r"|（\s*第\s*[0-9]+\s*页\s*）)"
+)
 _MERGED = re.compile(r"(?:研究|分析|探讨)了?.{2,40}(?:并|且|同时)发现")
 _PRAISE = re.compile(r"本文评述")
+
+# 「局限」一词若紧跟这些标记，说明作者已把归属写清，不必再要求「本文评述」。
+# 覆盖两种情形：① 说作者**没有**自陈（未自陈/未提出/作者未…）；
+#               ② 说作者**自陈了**（作者自陈/作者指出的局限）。
+_LIMIT_ATTR = ("本文评述", "评述认为", "作者自陈", "自陈", "作者未", "未提出",
+               "作者指出的", "作者承认", "作者提到")
+
+# 「空白必配理论依据」里「理论依据」的**规范写法**。SKILL.md 第 3 步把两者并列：
+# 「每组空白后必写理论依据（因此可开展的研究是……）」，故二者都算已配。
+GAP_RATIONALE_MARKERS = ("理论依据", "因此可开展的研究是")
+
+# 出现这些标记，说明文中的禁用词是**被引用**（讲规则、举例、给反例），不是违规。
+_BAN_MENTION = ("禁止", "不写", "不要写", "避免", "勿", "不得", "严禁", "不应",
+                "不能写", "忌", "杜绝", "禁用")
+
+
+def _mentions_only(text: str, word: str, window: int = 12) -> bool:
+    """word 在文中**只被提及**（前 window 字内有劝阻标记）即视为未使用。
+
+    为什么要做这个区分：模板与规则文档必须**引用**禁用词才能讲清规则
+    （例如「禁止『方法有待加强』」）。若不区分使用与提及，这些文档会被
+    满屏假警报淹没——而假警报会让人开始忽略 lint，比没有 lint 更糟
+    （本文件开头的 DOC_FORM_SKIP 注释已就同一问题表过态）。
+    """
+    start = 0
+    while True:
+        i = text.find(word, start)
+        if i < 0:
+            return True                      # 一次都没真正使用
+        if not any(k in text[max(0, i - window):i] for k in _BAN_MENTION):
+            return False                     # 找到一处未被劝阻标记覆盖的使用
+        start = i + len(word)
+
+
+def _has_unattributed_limit(text: str) -> bool:
+    """是否存在**归属不明**的「局限」——即该词前 12 字内没有任何归属标记。
+
+    为什么要这样判：一句话里出现「局限」并不等于违规。真正的违规是
+    **分不清这是作者自陈的局限，还是本文评述发现的局限**。已写明归属的句子
+    （如「作者未自陈局限」）本身就是合规写法，报它等于制造假警报。
+    """
+    for m in re.finditer("局限", text):
+        window = text[max(0, m.start() - 12):m.start()]
+        if not any(k in window for k in _LIMIT_ATTR):
+            return True
+    return False
+
 
 # ---- hygiene：脚本产物污染（2026-10-08 实战，两类都会静默混进正文） ----
 # ① HTML 实体：`&#x7684;`（＝「的」）。某些库/工具把非 ASCII 转义后未回转。
@@ -111,6 +168,19 @@ _INLINE_CODE = re.compile(r"`[^`\n]*`")
 def strip_code(text: str) -> str:
     """剥掉围栏代码块与行内代码，只留正文——用于「污染」类检查。"""
     return _INLINE_CODE.sub("", _FENCE_BLOCK.sub("", text))
+
+
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def strip_comments(text: str) -> str:
+    """剥掉 HTML 注释——**注释不是正文**（渲染后不出现），不该参与内容校验。
+
+    为什么要单独做：模板文件通篇是 `<!-- 填写说明 -->`，形态校验若把注释当正文，
+    就会拿"给填写者的指引"去判"成稿是否合规"（2026-10-08 实测：单篇模板的
+    两处裸缩写 ERROR 全部来自注释里的 `WTD = …` 定义清单）。
+    """
+    return _COMMENT.sub("", text)
 
 
 
@@ -135,6 +205,37 @@ def split_sections(text: str):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         sections.append((m.group(2), text[m.end():end]))
     return sections
+
+
+def split_sections_with_levels(text: str):
+    """→ [(层级, 标题, 正文)]。`split_sections` 丢掉了层级，而"本节与下一节"
+    这种近似判据需要它——见 gap-rat 规则。"""
+    marks = list(_HEADING.finditer(text))
+    if not marks:
+        return [(0, "", text)]
+    out = []
+    if marks[0].start() > 0:
+        out.append((0, "", text[:marks[0].start()]))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        out.append((len(m.group(1)), m.group(2), text[m.end():end]))
+    return out
+
+
+def section_subtree_text(leveled, i: int) -> str:
+    """第 i 节**及其所有子节**的正文合计（到下一个同级或更高级标题为止）。
+
+    为什么需要子树：综述的父节常叫「四、文献的批评与空白」，标题里带"空白"，
+    而真正配了理论依据的是它的**子节** 4.2。只看"本节与下一节"会把
+    **按模板写好的综述**判成违规（2026-10-08 实测：多篇模板即此结构）。
+    """
+    level = leveled[i][0]
+    parts = [leveled[i][2]]
+    j = i + 1
+    while j < len(leveled) and leveled[j][0] > level:
+        parts.append(leveled[j][2])
+        j += 1
+    return "\n".join(parts)
 
 
 def guess_form(path: str, text: str) -> str:
@@ -165,11 +266,28 @@ def guess_form(path: str, text: str) -> str:
 
 
 def _inside_paren(text: str, pos: int) -> bool:
-    """判断 pos 处的缩写是否处在括注里（`研究结果（ROF）` 的合规用法）。"""
+    """判断 pos 处的缩写是否处在括注里（`研究结果（ROF）` 的合规用法）。
+
+    ⚠️ 不能只看紧邻的前一个字符。并列括注 `（WTD / WTDD）`、`（SPL / CPL）`、
+    `（MOP / RPP）` 里，第二个缩写前面是分隔符而不是左括号，会被误判为裸缩写——
+    **而模板的标题正是这个写法**，于是照模板写出的成稿必然被罚
+    （2026-10-08 用真实文献跑形态 A 时实测：3 处 ERROR 全部来自这里）。
+
+    改为向左扫描并计数括号深度：先遇到左括号（且此前无未闭合右括号）→ 在括注内；
+    先遇到右括号则说明该缩写落在括注**之外**；扫描到行首 → 不在括注内。
+    """
+    depth = 0
     i = pos - 1
-    while i >= 0 and text[i] in " \t":
+    while i >= 0 and text[i] != "\n":
+        ch = text[i]
+        if ch in "）)":
+            depth += 1
+        elif ch in "（(":
+            if depth == 0:
+                return True
+            depth -= 1
         i -= 1
-    return i >= 0 and text[i] in "（("
+    return False
 
 
 # ---------------------------------------------------------------- 检查
@@ -220,9 +338,11 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
     #    代码块（示例/清单）整体跳过。
     bare, table, paren = [], [], []
     allowed = {a.strip().upper() for a in allow_abbr if a.strip()}
+    # 缩写与密码栏检查针对**正文**：注释里的缩写是写给填写者的说明，不是成稿内容
+    body = strip_comments(text)
     if "abbr" not in off:
         in_fence = False
-        for line in text.splitlines():
+        for line in body.splitlines():
             if line.lstrip().startswith("```"):
                 in_fence = not in_fence
                 continue
@@ -251,17 +371,35 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
         infos.append(f"括注形态缩写 {len(paren)} 处（首次出现处合规）")
 
     # 3) 禁用词
+    #    两条精度要求（2026-10-08 用真实模型文件实测后加）：
+    #    ① 不看注释——注释是写给填写者的说明，不是成稿内容；
+    #    ② 区分「使用」与「提及」——模板/规则文档会说「禁止『方法有待加强』」，
+    #       那是**在讲规则**；只有作者自己写出这句话才是违规。
+    #       判据同 limits 规则：看该词前 12 字内有没有劝阻标记。
     if "banned" not in off:
+        prose_banned = strip_comments(text)
         for word, why in BANNED:
-            if word in text:
+            if not _mentions_only(prose_banned, word):
                 errors.append(f"禁用表述「{word}」：{why}")
 
     # 4) 空白必配理论依据（逐节配对，不只查全文）
     if "gap-rat" not in off:
-        for i, (title, body) in enumerate(sections):
+        # 判据取「本节 + 其全部子节」，而不是"本节 + 紧邻下一节"：
+        # 综述的父节标题常含"空白"（如「四、文献的批评与空白」），
+        # 配了依据的是它的子节；只看下一节会把合规稿判成违规。
+        leveled = split_sections_with_levels(text)
+        for i, (_, title, body) in enumerate(leveled):
             if "空白" in title or "研究空白" in title:
-                nxt = sections[i + 1] if i + 1 < len(sections) else ("", "")
-                if "理论依据" in body or "理论依据" in nxt[0] + nxt[1]:
+                scope = section_subtree_text(leveled, i)
+                # 下一节要连**标题**一起看：把依据写成小节标题（「# 理论依据」）
+                # 是合规写法，只看正文会漏（本条由既有测试
+                # test_gap_without_theory_is_error_and_with_theory_passes 抓出）。
+                nxt = ""
+                if i + 1 < len(leveled):
+                    nxt = leveled[i + 1][1] + leveled[i + 1][2]
+                # 「理论依据」在技能里的规范写法有两种：直呼其名，或写成
+                # 「因此可开展的研究是……」（SKILL.md 第 3 步原话）。只认前者同样会误判。
+                if any(k in scope or k in nxt for k in GAP_RATIONALE_MARKERS):
                     continue
                 errors.append(f"「{title}」小节指出了空白，但本节与下一节都没有理论依据"
                               "（空白必配理论依据，否则沦为空谈）")
@@ -309,10 +447,18 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
                 infos.append("同一小节同时含提问与作答，核对是否已分栏")
 
     # 9) 作者自陈局限 ≠ 本发现的局限
-    if "limits" not in off:
-        if "局限" in text and not _PRAISE.search(text):
-            warnings.append("出现「局限」但全文无「本文评述」标记："
-                            "作者自陈局限与本文评述发现的局限必须分开写")
+    #    判据不能是「出现『局限』且无『本文评述』」——那是纯子串判断，会把
+    #    「作者未自陈局限」「作者自陈的局限与未来研究建议」这类**已经标明归属**的
+    #    句子一并报成违规（2026-10-08 用真实文献跑形态 A 时实测到：速览里一句
+    #    「它未提出空白、未自陈局限」就触发了假警报）。
+    #    改为逐处看该词**前 12 字内是否已有归属标记**；只有存在**归属不明**的
+    #    「局限」时才告警——覆盖面不变，假警报消失。
+    #    ★两个条件都要满足才告警：① 存在归属不明的「局限」；② 全文无「本文评述」。
+    #    只留①会误伤——模板的小节标题「五、本文贡献与局限」本身就含该词，
+    #    于是**每一份按模板写的导读都会中招**（2026-10-08 实测）。
+    if "limits" not in off and _has_unattributed_limit(text) and not _PRAISE.search(text):
+        warnings.append("出现未标明归属的「局限」且全文无「本文评述」标记："
+                        "作者自陈局限与本文评述发现的局限必须分开写")
 
     return {
         "file": path, "form": form, "chars": chars,

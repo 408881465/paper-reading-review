@@ -236,3 +236,111 @@ def test_skip_hygiene_turns_it_off():
     res = lr.lint_text("x.md", "# 标题\n\n污染&#x4EE5;。\n", form="B",
                        min_chars=0, max_chars=10 ** 9, skip=["hygiene"])
     assert not [e for e in res["errors"] if "HTML 实体" in e]
+
+
+# ---------------------------------------------------------------- 局限的归属
+# 2026-10-08 用真实文献跑形态 A 时发现：这条规则原本**一个测试都没有**，
+# 于是改写它时丢掉 `not _PRAISE` 条件都没人拦。
+
+def _limits_warned(text):
+    res = lr.lint_text("x.md", text, form="A", min_chars=0, max_chars=10 ** 9)
+    return any("局限" in w for w in res["warnings"])
+
+
+def test_unattributed_limitation_warns():
+    """归属不明的「局限」+ 全文无「本文评述」→ 应当告警。"""
+    assert _limits_warned("# 导读\n\n本文讨论了该研究的局限。\n")
+
+
+def test_limitation_with_praise_marker_passes():
+    """★模板的小节标题「五、本文贡献与局限」本身就含该词。
+    只要全文有「本文评述」，就不该报——否则每一份按模板写的导读都会中招。"""
+    text = ("# 导读\n\n## 五、本文贡献与局限\n\n"
+            "本文评述认为，该研究的方法存在样本偏小的局限。\n")
+    assert not _limits_warned(text)
+
+
+def test_attributed_limitation_without_praise_passes():
+    """「作者未自陈局限」已把归属写明，本身就是合规写法，不该报。"""
+    assert not _limits_warned("# 速览\n\n它未提出空白、未自陈局限。\n")
+
+
+# ---------------------------------------------------------------- 并列括注
+# 2026-10-08 用真实文献跑形态 A 时实测：模板标题写「（WTD / WTDD）」「（SPL / CPL）」
+# 「（MOP / RPP）」，而旧实现只看紧邻前一个字符，把第二个缩写判成裸缩写——
+# **照模板写出的成稿必然报 3 处 ERROR**。
+
+def _abbr_errors(text):
+    res = lr.lint_text("x.md", text, form="A", min_chars=0, max_chars=10 ** 9)
+    return [e for e in res["errors"] if "纯缩写" in e]
+
+
+def test_paired_parenthetical_abbreviations_are_allowed():
+    """并列括注里的**每一个**缩写都算首次括注，不只是第一个。"""
+    for s in ("（WTD）", "（WTD / WTDD）", "（SPL / CPL）", "（MOP / RPP）",
+              "（研究结果 / 理论依据）"):
+        assert not _abbr_errors(f"# x\n\n### a {s}\n\n正文。\n"), f"{s} 被误判"
+
+
+def test_abbreviation_after_closed_paren_is_still_bare():
+    """括注**之外**的缩写仍须报——`见（表 1）ROF 的说明` 里 ROF 不算括注用法。"""
+    assert _abbr_errors("# x\n\n见（表 1）ROF 的说明。\n")
+
+
+def test_bare_abbreviation_in_prose_still_caught():
+    """正文行文里的裸缩写照旧要报（不能为了修并列括注而放走它）。"""
+    assert _abbr_errors("# x\n\n本文用 ROF 表示研究结果。\n")
+
+
+# ---------------------------------------------------------------- 用真实文献实测后补的规则精度
+# 2026-10-08 拿真实文献跑形态 A/B/C/D，发现以下四条规则会把**合规产出**判成违规。
+
+def test_html_comment_is_not_content():
+    """★注释不是正文。模板通篇是 `<!-- 填写说明 -->`，把注释当内容校验，
+    等于拿"给填写者的指引"去判"成稿是否合规"。"""
+    text = "# x\n\n<!-- 说明：WTD = 作者提出的主要问题；禁止「方法有待加强」 -->\n\n正文。\n"
+    res = lr.lint_text("x.md", text, form="A", min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res["errors"] if "纯缩写" in e]
+    assert not [e for e in res["errors"] if "禁用表述" in e]
+
+
+def test_banned_word_quoted_in_rule_is_not_a_violation():
+    """★规则文档必须**引用**禁用词才能讲清规则（「禁止『方法有待加强』」）。
+    不区分使用与提及，会让模板满屏假警报；而假警报会让人忽略 lint。"""
+    ok = "# x\n\n批评点必须落在具体处。禁止「方法有待加强」这类空话。\n"
+    res = lr.lint_text("x.md", ok, form="card", min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res["errors"] if "禁用表述" in e]
+
+    bad = "# x\n\n该研究方法有待加强。\n"
+    res = lr.lint_text("x.md", bad, form="card", min_chars=0, max_chars=10 ** 9)
+    assert [e for e in res["errors"] if "禁用表述" in e], "真正的使用仍须拦住"
+
+
+def test_gap_rationale_accepts_skill_sanctioned_phrasing():
+    """★「空白必配理论依据」里的依据，技能认可的写法有两种：
+    直呼「理论依据」，或写成「因此可开展的研究是……」（SKILL.md 第 3 步原话）。
+    只认前者会把**按模板写好的稿子**判成违规。"""
+    t = ("# 四、文献的批评与空白（现有文献批评 / 空白）\n\n"
+         "### 4.2 系统性研究空白\n\n#### 空白 1：x\n\n"
+         "- 提出该空白的文献：甲\n- **因此可开展的研究是**：补做 y\n")
+    res = lr.lint_text("x.md", t, form="B", min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res["errors"] if "理论依据" in e]
+
+
+def test_gap_check_covers_subtree_not_only_next_section():
+    """★父节标题含"空白"、配依据的是它的**子节**——只看"本节与下一节"会误判。
+    实测：多篇模板的「四、文献的批评与空白」正是这个结构。"""
+    t = ("# 四、文献的批评与空白\n\n概述。\n\n"
+         "## 4.1 反复出现的批评点\n\n甲、乙。\n\n"
+         "### 4.2 系统性研究空白\n\n**理论依据**：活动理论可解释。\n")
+    res = lr.lint_text("x.md", t, form="B", min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res["errors"] if "理论依据" in e]
+
+
+def test_locator_counts_section_name_fallback():
+    """★batch-workflow §5.1 第 2 条：**没有页码标注就回指章节名**。
+    校验器不认章节名回指的话，按 §5.1 合规写的稿子会被警告"可回指 0 处"
+    （实测：L0041 页码抽坏、L0074 无页码，只能章节名回指）。"""
+    t = ("# 综述\n\n见「研究背景」一节；另见第 二 节与 p.147。\n" + "正文。" * 400)
+    res = lr.lint_text("x.md", t, form="B", min_chars=0, max_chars=10 ** 9)
+    assert res["locators"] >= 3, f"章节名回指未计入可回指标记（得 {res['locators']}）"
