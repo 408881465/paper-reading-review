@@ -344,3 +344,23 @@ def test_locator_counts_section_name_fallback():
     t = ("# 综述\n\n见「研究背景」一节；另见第 二 节与 p.147。\n" + "正文。" * 400)
     res = lr.lint_text("x.md", t, form="B", min_chars=0, max_chars=10 ** 9)
     assert res["locators"] >= 3, f"章节名回指未计入可回指标记（得 {res['locators']}）"
+
+
+# ---------------------------------------------------------------- 命名实体（真实语料查出）
+def test_named_html_entities_are_caught():
+    """★只认数字实体会漏掉命名实体。
+
+    实测：某政策文件 .docx 的旧版抽取结果里有 **54 处 `&quot;`**、1 处 `&gt;`，
+    而旧的 `&#x?[0-9A-Fa-f]{2,6};` 只匹配数字实体，整类漏检。
+    """
+    for ent in ("&quot;", "&amp;", "&lt;", "&gt;", "&nbsp;", "&ldquo;"):
+        res = lr.lint_text("x.md", f"# x\n\n污染 {ent} 残留。\n", form="B",
+                           min_chars=0, max_chars=10 ** 9)
+        assert any("HTML 实体" in e for e in res["errors"]), f"{ent} 漏检"
+
+
+def test_lone_ampersand_is_not_an_entity():
+    """不能为了抓实体而误伤正文里的 `&` 与 `R&D`（假警报会让人忽略 lint）。"""
+    res = lr.lint_text("x.md", "# x\n\nA & B 合作，R&D 投入。\n", form="B",
+                       min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res["errors"] if "HTML 实体" in e]

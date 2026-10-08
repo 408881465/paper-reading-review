@@ -111,6 +111,44 @@ def _load_extractor():
         return module
 
 
+def _load_docx_extractor():
+    """加载同目录的 extract_docx_text（仅标准库，无需额外依赖）。"""
+    try:
+        import extract_docx_text as module
+        return module
+    except ImportError:
+        path = os.path.join(_HERE, "extract_docx_text.py")
+        spec = importlib.util.spec_from_file_location("extract_docx_text", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+
+def extract_one_docx(docx_path: str, out_path: str, extractor,
+                     with_para_numbers: bool = False):
+    """抽一份 .docx → (状态, 段落数, 字符数, 提示消息)。
+
+    **不产出 `===== PAGE n =====` 标记**：docx 分页随版式重排，页码不可作引用依据，
+    回指基准是章节名（见 references/batch-workflow.md §5.1 第 2 条）。
+    故「页数」位恒为空字符串——登记表的 `页数` 栏对 .docx 无意义。
+    """
+    try:
+        lines, n_para, _ = extractor.extract(docx_path, with_para_numbers)
+    except Exception as exc:                       # noqa: BLE001 — 逐篇容错，不中断整批
+        return "打不开", 0, 0, f"docx 解析失败：{exc}"
+    if not n_para:
+        return "打不开", 0, 0, "docx 未取到正文（可能只有图形或正文在文本框内）"
+    header = [
+        f"<!-- 来源：{os.path.basename(docx_path)}（.docx，无固定页码）",
+        "     回指基准：**章节名**；本文件不含 PAGE 标记。 -->",
+        "",
+    ]
+    body = "\n".join(header + lines) + "\n"
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    return "ok", 0, len(re.sub(r"\s", "", body)), ""
+
+
 def is_dedup_row(row) -> bool:
     """该行是否已被 `sync_corpus` 判为重复——即"不要处理这一行"的决定。
 
@@ -261,6 +299,7 @@ def main(argv=None) -> int:
     extractor = _load_extractor()
     os.makedirs(args.outdir, exist_ok=True)
     dup_skipped = 0
+    todo_docx = []
 
     todo = []
     for row in rows:
@@ -270,10 +309,17 @@ def main(argv=None) -> int:
                 row["解码状态"] = "源文件缺失"
             continue
         ext = os.path.splitext(src)[1].lower()
-        if ext != ".pdf":
+        if ext not in (".pdf", ".docx", ".doc"):
             if row.get("解码状态") in ("", "未处理"):
                 row["解码状态"] = "待其它提取器"
-                row["备注"] = (row.get("备注", "") + "；非 PDF，需 docx/OCR 等提取器").strip("；")
+                row["备注"] = (row.get("备注", "") + "；该格式暂无抽取器，需其它工具").strip("；")
+            continue
+        if ext in (".docx", ".doc"):
+            # .docx 不走 PDF 那条路（没有页码概念，回指基准是章节名）。
+            # 2026-10-08 前这里一律标「待其它提取器」，而本课题 4 份政策文件
+            # 全是 .docx（教育部通知、通识指南、上海素养框架、地方课程监测报告），
+            # 政策文件又是申报书要引的关键依据——链路实际是断的。
+            todo_docx.append(row)
             continue
         have = row.get("文本路径", "")
         # 已是 OCR 结果的图片型文献必须保护：重抽只可能再得"需OCR"，
@@ -312,12 +358,16 @@ def main(argv=None) -> int:
         todo = todo[:args.limit]
 
     msg = f"待抽文本 {len(todo)} 篇（已抽的跳过）"
+    if todo_docx:
+        msg += f"；另有 {len(todo_docx)} 篇 .docx 走章节名回指（无页码标记）"
     if dup_skipped:
         msg += f"；另有 {dup_skipped} 篇已判为重复，按登记表的去重决定跳过"
     print(msg)
     if args.dry_run:
         for row in todo:
             print(f"  · {row['编号']}  {row['文件名']}")
+        for row in todo_docx:
+            print(f"  · {row['编号']}  {row['文件名']}   [.docx]")
         return 0
 
     results = {"ok": 0, "需OCR": 0, "打不开": 0}
@@ -337,10 +387,45 @@ def main(argv=None) -> int:
             row["文本路径"] = ""
             row["解码状态"] = status
         if msg:
-            row["备注"] = (row.get("备注", "") + "；" + msg).strip("；")
+            # ★同一条消息只写一次：重跑（--force／--redo-ocr／多次 scan）会把同一条
+            #   "2/2 页无文本层，需先 OCR" 反复追加，备注栏被自己的重复句填满
+            #   （2026-10-08 实测：跑 3 次后同一句出现 3 次，且 status 输出被噪音淹没）。
+            if msg not in (row.get("备注") or ""):
+                row["备注"] = (row.get("备注", "") + "；" + msg).strip("；")
             notes.append(f"{row['编号']} {row['文件名']}：{msg}")
         print(f"  [{status}] {row['编号']}  {row['文件名']}"
               + (f"  ({pages} 页 / {chars} 字)" if status == "ok" else f"  ← {msg}"))
+
+    # ---- .docx 队列：走 extract_docx_text，回指基准是章节名（无 PAGE 标记）----
+    if todo_docx:
+        docx_extractor = _load_docx_extractor()
+        for row in todo_docx:
+            out = os.path.join(
+                args.outdir,
+                f"{row['编号']}_{safe_filename(row.get('标题') or row['文件名'])}.txt")
+            status, pages, chars, msg = extract_one_docx(
+                row["源路径"], out, docx_extractor,
+                with_para_numbers=args.printed_labels)
+            results[status] = results.get(status, 0) + 1
+            # .docx 无固定页码：`页数` 栏保持原值（不写 0，避免被读成"0 页"）
+            row["页数"] = row.get("页数", "")
+            row["字符数"] = str(chars) if chars else row.get("字符数", "")
+            if status == "ok":
+                row["文本路径"] = out
+                row["解码状态"] = "已抽文本"
+            else:
+                row["文本路径"] = ""
+                row["解码状态"] = status
+            if msg:
+                # ★同一条消息只写一次：重跑（--force／多次 scan）会把同一条
+                #   "2/2 页无文本层，需先 OCR" 反复追加，备注栏被自己的重复句填满
+                #   （2026-10-08 实测：跑 3 次后同一句出现 3 次）。
+                if msg not in (row.get("备注") or ""):
+                    row["备注"] = (row.get("备注", "") + "；" + msg).strip("；")
+                notes.append(f"{row['编号']} {row['文件名']}：{msg}")
+            print(f"  [{status}] {row['编号']}  {row['文件名']}"
+                  + (f"  (.docx / {chars} 字，按章节名回指)" if status == "ok"
+                     else f"  ← {msg}"))
 
     # 抽取文本层面的版本重复检查（文件字节不同但内容一致）
     dup_pairs = []

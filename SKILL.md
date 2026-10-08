@@ -103,6 +103,10 @@ agent_created: true
 **不要**对上百篇逐篇出详版——既跑不完，也没人读；T3 只入表是合法取舍，
 但必须在总报告里写明「未逐篇精读，仅按题录与摘要定位」。
 
+**形态 D 的收口产出是「总报告」（`report`）**：跑完整批后必须出一份，
+它交代覆盖与精读声明（T3 未精读要写明）、主题格局、系统性空白、一致性三查结果。
+规格见 `assets/report-template.md`。
+
 多篇输入且用户没说清要哪种时，**问一句再动手**——B 和 C 的文档结构完全不同，
 猜错要重写。
 
@@ -266,9 +270,11 @@ paper-reading-review/
 │   ├── comparative-review-template.md# 形态 C 模板
 │   ├── decode-card-template.md       # 形态 D：T2/专著章节用一页解码卡
 │   ├── triage-registry-template.csv  # 形态 D：文献登记表（18 栏）
+│   ├── report-template.md            # 形态 D 收口：总报告（含精读声明与一致性三查）
 │   └── rcos-template.csv             # RCOS 整合表模板
 ├── scripts/
 │   ├── extract_pdf_text.py   # PDF → 带页码标记纯文本
+│   ├── extract_docx_text.py  # .docx → 带章节标题的纯文本（仅标准库，无页码）
 │   ├── sync_corpus.py        # 形态 D：判重、增量同步、登记表状态
 │   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
 │   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单、产物卫生
@@ -289,6 +295,9 @@ paper-reading-review/
 | 成稿自检 | `review-workflow.md` 第 6 节 |
 | 排查写坏了 | `review-workflow.md` 第 7 节 |
 | 转 PDF 文本 | `scripts/extract_pdf_text.py --help` |
+| 转 Word(.docx) 文本 | `scripts/extract_docx_text.py --help` |
+| OCR 完的文本回流登记表 | `scripts/sync_corpus.py attach --help` |
+| 一批读完后出总报告 | `assets/report-template.md` |
 | 校验 RCOS / 生成模板 | `scripts/build_review.py --help` |
 | 文献上百篇、要分档读 | `references/batch-workflow.md`（形态 D 全流程） |
 | 判重 / 增量追加新文献 | `scripts/sync_corpus.py --help` |

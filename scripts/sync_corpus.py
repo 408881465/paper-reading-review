@@ -133,20 +133,27 @@ def parse_author_title(filename: str):
 
 
 def guess_source_type(filename: str) -> str:
-    """按文件名给来源类型一个**初判**；不确定就写「待核」而不是硬猜。"""
+    """按文件名给来源类型一个**初判**；不确定就写「待核」而不是硬猜。
+
+    ⚠️ **内容标记优先于扩展名**。旧实现把 `.docx/.doc → 文档` 放在最前，
+    于是"通知""指南""学位论文"这些标记根本没机会生效
+    （2026-10-08 实测：本课题 4 份政策 .docx 全被判为「文档」，
+    而文件名里明明写着「通知」「指南」）。
+    来源类型是四档分流（T1/T2/T3）的输入，判错会让政策文件按普通文档处理。
+    """
     ext = os.path.splitext(filename)[1].lower()
-    if ext in IMG_EXTS:
-        return "图片"
-    if ext in {".docx", ".doc"}:
-        return "文档"
-    if ext == ".md":
-        return "笔记"
     if any(m in filename for m in THESIS_MARKERS):
         return "学位论文"
     if any(m in filename for m in POLICY_MARKERS):
         return "政策文件"
     if any(m in filename for m in BOOK_MARKERS):
         return "专著"
+    if ext in IMG_EXTS:
+        return "图片"
+    if ext in {".docx", ".doc"}:
+        return "文档"
+    if ext == ".md":
+        return "笔记"
     if ext == ".pdf":
         return "期刊论文"      # 待核：多数 PDF 是期刊论文，但仍需读后确认
     return "待核"
@@ -376,6 +383,53 @@ def _write_scan_report(path, targets, added, skipped_dup, flagged):
         fh.write("\n".join(lines))
 
 
+def cmd_attach(args) -> int:
+    """把外部抽好的文本挂到某一编号上——**OCR 回流的正式入口**。
+
+    为什么需要它：状态机里「需OCR」的那条线写着"先 OCR 再回主流程"，但
+    **回流没有任何工具**——抽完的文本只能手工去改登记表的 `文本路径` 与
+    `解码状态`（2026-10-08 实测：sync_corpus 只有 init/scan/status 三个子命令，
+    batch_extract 里 `已OCR` 只作为"受保护状态"被读取）。手工改表既容易写错，
+    也绕过了"身份字段不得改"的约束。
+
+    本命令只写**脚本回填字段**（文本路径／字符数／解码状态），
+    **绝不碰** 档位／纳入判定／主题分类／相关度——那四项是人的判断。
+    """
+    fields, rows = load_registry(args.registry)
+    target = None
+    for row in rows:
+        if row.get("编号") == args.id or row.get("文件名") == args.id:
+            target = row
+            break
+    if target is None:
+        print(f"找不到编号或文件名：{args.id}", file=sys.stderr)
+        return 1
+    if not os.path.exists(args.text):
+        print(f"文本文件不存在：{args.text}", file=sys.stderr)
+        return 1
+    # 与 batch_extract 的抽查保持一致的"有没有内容"判据
+    with open(args.text, encoding="utf-8", errors="replace") as fh:
+        content = fh.read()
+    chars = len(re.sub(r"\s", "", content))
+    if chars < 10:
+        print(f"文本几乎为空（{chars} 字）——空文本会被下游误读成「原文没写」，"
+              "拒绝挂载。", file=sys.stderr)
+        return 1
+
+    before = target.get("解码状态") or "（空）"
+    target["文本路径"] = os.path.abspath(args.text)
+    target["字符数"] = str(chars)
+    target["解码状态"] = "已OCR"
+    note = args.note or "文本由外部 OCR 挂载"
+    if note not in (target.get("备注") or ""):
+        target["备注"] = ((target.get("备注") or "") + "；" + note).strip("；")
+    save_registry(args.registry, fields, rows)
+    print(f"已挂载：{target['编号']}  {target['文件名']}")
+    print(f"  解码状态：{before} → 已OCR｜字符数：{chars}｜文本：{target['文本路径']}")
+    print("  提醒：已OCR 状态受保护，重抽需显式 --redo-ocr（防 OCR 成果被覆盖）。")
+    return 0
+
+
 def cmd_status(args) -> int:
     try:
         fields, rows = load_registry(args.registry)
@@ -401,8 +455,15 @@ def cmd_status(args) -> int:
     problems = []
     for row in rows:
         status, out, tier = row.get("解码状态", ""), row.get("产出文件", ""), row.get("档位", "")
-        if tier in ("T1核心", "T2重要", "专著章节") and status in ("", "未处理"):
-            problems.append(f"{row['编号']} 已定档 {tier} 但 {status or '未处理'}：{row['文件名']}")
+        # ★已定档为核心/重要、但还没走到「已解码」的，全部算待办。
+        #   旧写法只查 `status in ("", "未处理")`——一旦抽出文本，状态变成「已抽文本」，
+        #   这条检查就不再触发，于是"定档了却一直没出解码卡"可以**毫无提示地停在原地**。
+        #   2026-10-08 实测：15 篇 T1/T2 全部停在「已抽文本」，而 status 报「待办／异常 0 条」。
+        #   这是最容易发生的静默停滞——流程看起来在跑，其实一步没动。
+        DONE = ("已解码", "已入RCOS", "已入综述")
+        if tier in ("T1核心", "T2重要", "专著章节") and status not in DONE:
+            problems.append(f"{row['编号']} 已定档 {tier} 但尚未解码"
+                            f"（状态={status or '未处理'}）：{row['文件名']}")
         if status == "已解码" and not out:
             problems.append(f"{row['编号']} 标记已解码但未填产出文件：{row['文件名']}")
         if status == "跳过" and "重复" not in tier and "重复" not in row.get("备注", ""):
@@ -449,6 +510,14 @@ def build_parser():
     p_status = sub.add_parser("status", help="看进度与待办")
     p_status.add_argument("registry")
     p_status.set_defaults(func=cmd_status)
+
+    p_attach = sub.add_parser(
+        "attach", help="把外部抽好的文本挂到某一编号（OCR 回流的正式入口）")
+    p_attach.add_argument("registry")
+    p_attach.add_argument("id", help="编号（如 L0007）或完整文件名")
+    p_attach.add_argument("--text", required=True, help="要挂载的文本文件")
+    p_attach.add_argument("--note", help="追加到备注的说明")
+    p_attach.set_defaults(func=cmd_attach)
     return p
 
 

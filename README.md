@@ -37,7 +37,7 @@
 读取 `~/.agents/skills/` 的 Agent 运行时（如 DSH）放到该目录下同样可用。
 若手动安装，请确保目录名与 `SKILL.md` 的 `name:` 字段一致（全小写）。
 
-**依赖**：Python 3；`extract_pdf_text.py` 需要 `pymupdf`
+**依赖**：Python 3；`extract_pdf_text.py` 需要 `pymupdf`；`extract_docx_text.py` 与其余脚本**仅用标准库**（.docx 按 zip+XML 直接解析）
 （`batch_extract.py` 复用它的抽取逻辑，故同样需要）：
 
 ```bash
@@ -68,6 +68,12 @@ python3 scripts/build_review.py rcos rcos.csv
 python3 scripts/sync_corpus.py scan 文献登记表.csv --source <目录>
 python3 scripts/batch_extract.py --registry 文献登记表.csv --outdir 02_文本/
 python3 scripts/lint_review.py <成稿.md> --form B
+
+# .docx 会被 batch_extract 自动接走；也可单独抽（无页码，回指用章节名）
+python3 scripts/extract_docx_text.py <文件.docx> -o /tmp/policy.txt
+
+# OCR 完的文本回流登记表（否则「需OCR」是条断头的支线）
+python3 scripts/sync_corpus.py attach 文献登记表.csv L0007 --text /tmp/ocr.txt
 ```
 
 `extract_pdf_text.py` 的退出码：`0` 正常、`1` 打不开或缺依赖、`2` 多数页无文本层
@@ -97,9 +103,11 @@ paper-reading-review/
 │   ├── comparative-review-template.md# 形态 C 模板
 │   ├── decode-card-template.md       # 形态 D：T2/专著章节用一页解码卡
 │   ├── triage-registry-template.csv  # 形态 D：文献登记表（18 栏）
+│   ├── report-template.md            # 形态 D 收口：总报告（精读声明 + 一致性三查）
 │   └── rcos-template.csv             # RCOS 整合表模板
 ├── scripts/
 │   ├── extract_pdf_text.py   # PDF → 带页码标记纯文本
+│   ├── extract_docx_text.py  # .docx → 带章节标题纯文本（仅标准库；无页码，回指用章节名）
 │   ├── sync_corpus.py        # 形态 D：判重、增量同步、登记表状态
 │   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
 │   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单、产物卫生

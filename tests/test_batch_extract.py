@@ -91,15 +91,33 @@ def test_second_run_skips_already_extracted(project, capsys):
     assert "待抽文本 0 篇" in capsys.readouterr().out
 
 
-def test_non_pdf_marked_for_other_extractor(project):
+def test_unsupported_format_marked_for_other_extractor(project):
+    """★2026-10-08 变更：`.docx` 已有抽取器，不再是"待其它提取器"。
+
+    旧测试用假 docx 字节（`PK\x03\x04fake`）走这条路；现在它会被 docx
+    分支接走。这里改用**确实没有抽取器**的格式（.pptx）守住这条支线。
+    """
     reg, outdir, src = project
-    (src / "指南.docx").write_bytes(b"PK\x03\x04fake")
+    (src / "课件.pptx").write_bytes(b"PK\x03\x04fake")
     sc.main(["scan", reg, "--source", str(src)])
 
     be.main(["--registry", reg, "--outdir", outdir])
     rows = _read(reg)
     assert rows[0]["解码状态"] == "待其它提取器"
-    assert "非 PDF" in rows[0]["备注"]
+    assert "暂无抽取器" in rows[0]["备注"]
+
+
+def test_broken_docx_is_marked_unopenable_not_silently_skipped(project):
+    """坏掉的 .docx 要标「打不开」并留下原因，不能静默略过。"""
+    reg, outdir, src = project
+    (src / "坏的.docx").write_bytes(b"PK\x03\x04fake")
+    sc.main(["scan", reg, "--source", str(src)])
+
+    be.main(["--registry", reg, "--outdir", outdir])
+    row = _read(reg)[0]
+    assert row["解码状态"] == "打不开", row["解码状态"]
+    assert "docx" in row["备注"]
+    assert row["文本路径"] == ""
 
 
 def test_missing_source_is_flagged(project):
@@ -318,3 +336,51 @@ def test_redo_ocr_alone_actually_re_extracts(project, tmp_path):
     be.main(["--registry", reg, "--outdir", outdir, "--redo-ocr", "--no-dup-check"])
     row = _read(reg)[0]
     assert row["解码状态"] == "需OCR", "--redo-ocr 单独使用未生效"
+
+
+def test_docx_goes_through_docx_extractor_not_pending(project):
+    """★.docx 必须被真正抽取，而不是标成「待其它提取器」。
+
+    此前非 PDF 一律标「待其它提取器」，而本课题 4 份政策文件全是 .docx
+    （教育部通知、通识指南、上海素养框架、地方课程监测报告），
+    政策文件恰是申报书要引的关键依据——链路实际是断的。
+    产出**不含 PAGE 标记**（docx 无固定页码，回指基准是章节名）。
+    """
+    import zipfile
+    reg, outdir, src = project
+    docx = src / "政策_关于加强XX的通知.docx"
+    with zipfile.ZipFile(docx, "w") as z:
+        z.writestr("word/document.xml",
+                   '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+                   'wordprocessingml/2006/main"><w:body>'
+                   '<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr>'
+                   '<w:r><w:t>一、指导思想</w:t></w:r></w:p>'
+                   '<w:p><w:r><w:t>正文内容若干，足够长以通过检查。</w:t></w:r></w:p>'
+                   '</w:body></w:document>')
+    sc.main(["scan", reg, "--source", str(src)])
+    assert be.main(["--registry", reg, "--outdir", outdir]) == 0
+
+    row = _read(reg)[0]
+    assert row["解码状态"] == "已抽文本", f"docx 未被抽取：{row['解码状态']}"
+    assert row["文本路径"] and os.path.exists(row["文本路径"])
+    body = open(row["文本路径"], encoding="utf-8").read()
+    assert "===== PAGE" not in body, "docx 不该产出 PAGE 标记（无固定页码）"
+    assert "# 一、指导思想" in body, "章节标题应保留（章节名回指用）"
+    assert row["页数"] == "", ".docx 的页数栏应留空，不能写 0"
+
+
+def test_extract_message_is_not_appended_twice(project):
+    """★同一条消息只写一次。
+
+    重跑（--force／--redo-ocr／多次 scan）会把同一条
+    "N/N 页无文本层，需先 OCR" 反复追加，备注栏被自己的重复句填满
+    （实测跑 3 次后同一句出现 3 次，status 输出被噪音淹没）。
+    """
+    reg, outdir, src = project
+    _make_blank_pdf(src / "扫描件_赵六.pdf", n=2)
+    sc.main(["scan", reg, "--source", str(src)])
+    for _ in range(3):
+        be.main(["--registry", reg, "--outdir", outdir, "--no-dup-check"])
+
+    note = _read(reg)[0]["备注"]
+    assert note.count("无文本层") == 1, f"备注被重复追加：{note}"
