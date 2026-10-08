@@ -69,6 +69,12 @@ python3 scripts/sync_corpus.py scan 文献登记表.csv --source <目录>
 python3 scripts/batch_extract.py --registry 文献登记表.csv --outdir 02_文本/
 python3 scripts/lint_review.py <成稿.md> --form B
 
+# ★批量检查时用 find -print0 | xargs -0 传参：
+#   真实语料里常有含空格的文名（实测「L0141_Salah-美国K12 STEM工程教育-章节解码卡.md」），
+#   无引号的 $FILES 展开会把它拆成两个路径，linter 只能报「无法读取」——
+#   看起来像技能出错，其实是 shell 拆词。
+find 03_解码卡 -name '*.md' -print0 | xargs -0 python3 scripts/lint_review.py
+
 # .docx 会被 batch_extract 自动接走；也可单独抽（无页码，回指用章节名）
 python3 scripts/extract_docx_text.py <文件.docx> -o /tmp/policy.txt
 

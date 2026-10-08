@@ -163,8 +163,9 @@ def test_chapter_card_has_its_own_range():
     assert lr.FORM_RANGES["chapter-card"] == (400, 5000)
     assert lr.guess_form("L0150_王新燕-章节解码卡.md", "") == "chapter-card"
     assert lr.guess_form("L0022-Kim-解码卡.md", "") == "card"
-    # 3000 字：T2 卡超限（warning），章节级卡合格
-    text = "# 章节级解码卡\n\n" + "研究结果与批评点。" * 350   # 约 2800 汉字
+    # ★一页卡上限 2026-10-09 由 2500 放宽到 3200（按 78 份真实卡标定），
+    #   故样本要取到 3200 以上，才仍能验证「T2 卡超限、章节级卡合格」。
+    text = "# 章节级解码卡\n\n" + "研究结果与批评点。" * 450   # 约 2800 汉字
     res_card = lr.lint_text("x-解码卡.md", text, form="card")
     assert any("超过" in w for w in res_card["warnings"])
     res_chapter = lr.lint_text("x-章节解码卡.md", text, form="chapter-card")
@@ -448,3 +449,77 @@ def test_other_forms_not_mistaken_for_report():
     assert lr.guess_form("跨学科协同研究.md", b) == "B"
     a = "# 单篇深度导读：x\n\n## 一、引用信息\n\n## 二、结构性密码\n\n| 作者提出的主要问题 | y |\n"
     assert lr.guess_form("某篇研究.md", a) == "A"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 形态判定根治：**内容特征优先，文件名退居兜底**
+# 旧实现以文件名为第一判据，同一类缺陷出现过三次（章节卡／一页卡／总报告），
+# 每次都靠加内容兜底打补丁。2026-10-09 根治：把内容特征提到文件名之前。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_TEMPLATES = {
+    "single-review-template.md": "A",
+    "quick-review-template.md": "quick",
+    "multi-review-template.md": "B",
+    "comparative-review-template.md": "C",
+    # ★这是 **T2 一页卡**模板（H1 是「单篇解码卡（形态 D · T2／专著章节用）」）——
+    #   章节卡的专属标记「章节级解码卡」只出现在它内部的**注释**里（给填写者的说明），
+    #   而签名只匹配标题行，故判 `card` 是对的。章节卡由 `--form chapter-card`
+    #   或文件名/首行含「章节」识别。
+    "decode-card-template.md": "card",
+    "report-template.md": "report",
+}
+
+
+def test_every_template_is_identified_by_its_own_content():
+    """★六套模板的正文特征必须各自唯一命中——这是"内容优先"能成立的前提。
+
+    用 assets/ 之外的路径判定，否则会被 `doc` 规则接走。
+    探针实测：六套模板各只命中自己（章节卡模板同时含卡特征，靠**顺序**取胜）。
+    """
+    import os
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(lr.__file__))), "assets")
+    for fn, want in _TEMPLATES.items():
+        text = open(os.path.join(root, fn), encoding="utf-8").read()
+        got = lr.guess_form(fn, text)
+        assert got == want, f"{fn} 内容判定为 {got}，应为 {want}"
+
+
+def test_content_wins_over_filename():
+    """★根治的核心断言：内容与文件名冲突时，**以内容为准**。
+
+    旧实现下这三例都会被文件名带偏，导致按错的规格检查。
+    """
+    # 名叫"解码卡"但内容其实是详版 → 判 A
+    a_body = ("# 单篇深度导读\n\n## 一、导读摘要\n\n## 五、本文贡献与局限\n\n## 六、读后总评\n")
+    assert lr.guess_form("某篇-解码卡.md", a_body) == "A"
+    # 名叫"总报告"但内容其实是主题综述 → 判 B
+    b_body = "# 主题综述：x\n\n## 一、综述摘要\n\n## 二、文献范围与筛选说明\n"
+    assert lr.guess_form("总报告.md", b_body) == "B"
+    # 自由命名、内容是章节卡 → 判 chapter-card（章节卡优先于卡）
+    ch_body = ("# 章节级解码卡（形态 D）\n\n## 0. 题录\n\n## 1. 结构性密码\n\n"
+               "## 2. 策略性密码\n\n## 3. 与本课题的接口\n")
+    assert lr.guess_form("随便什么名.md", ch_body) == "chapter-card"
+
+
+def test_filename_still_works_when_content_is_uninformative():
+    """内容判不出时，文件名兜底必须还在（否则空文件/摘录片段会全落到 B）。"""
+    assert lr.guess_form("某篇-速览.md", "") == "quick"
+    assert lr.guess_form("某主题-对比评述.md", "") == "C"
+    assert lr.guess_form("某主题-综述.md", "") == "B"
+    assert lr.guess_form("某篇-导读.md", "") == "A"
+    assert lr.guess_form("某篇-章节解码卡.md", "") == "chapter-card"
+
+
+def test_card_upper_bound_is_calibrated_to_real_output():
+    """★一页卡上限按真实产出标定：2500 → 3200。
+
+    依据：78 份真实解码卡的分布 min 1222／中位 2125／P75 2416／**P90 2799**／max 3088。
+    2500 切在 P75 与 P90 之间，**19%（14/73）的正常产出触发**；且核对发现其中
+    13 份已按规则要求标注了字数与取舍——说明是上限标定不符，不是产出习惯问题。
+    """
+    assert lr.FORM_RANGES["card"] == (200, 3200)
+    # 实测最大值 3088 应不再触发
+    body = "# 单篇解码卡\n\n## 0. 题录\n\n## 1. 结构性密码\n\n## 2. 策略性密码\n\n" + "内容。" * 1550
+    res = lr.lint_text("x-解码卡.md", body, form="auto", min_chars=0, max_chars=10 ** 9)
+    assert not [w for w in res["warnings"] if "超过 card" in w], "实测最大值仍在报警"
