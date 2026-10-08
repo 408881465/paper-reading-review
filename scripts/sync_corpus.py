@@ -204,11 +204,137 @@ def load_registry(path: str):
     if missing:
         # 旧表缺列：补在末尾，不重排既有列，避免破坏人工维护的列序
         fields = fields + missing
+    key = os.path.abspath(path)
+    _LOADED_BASE[key] = [dict(r) for r in rows]     # 供 save_registry 做三方合并
+    _LOADED_FP[key] = _sync_fingerprint(path)
     return fields, rows
 
 
-def save_registry(path: str, fields: list, rows: list) -> None:
-    """原子写：先写临时文件再 replace，避免中断留下半张表。"""
+# 每个登记表在**加载时**的行快照，供保存前做三方合并。
+# 多人并行时（技能 §6 明说"按主题切分、各自目录"，两人必然同时写这一张表），
+# 脚本是「整表读入 → 内存改 → 整表写回」，中间窗口在 batch_extract 里长达**数分钟**，
+# 期间别人的改动会被整体覆盖。2026-10-08 用真实文件确定性复现两例：
+#   ① 甲跑 batch_extract（窗口 3.1s）时乙 `attach` 挂 OCR 文本 → 乙的状态与备注被清空；
+#   ② 甲乙各 `scan` 自己的目录 → **甲的 3 条登记全部消失**，且双方退出码都是"成功"，
+#      编号还撞成同一批（L0001–L0003）。
+_LOADED_BASE = {}
+
+
+def _sync_fingerprint(path: str):
+    """登记表当前内容指纹；不存在返回 None。"""
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return (len(data), hashlib.sha1(data).hexdigest())
+    except OSError:
+        return None
+
+
+def merge_registry_rows(base, ours, theirs):
+    """三方合并登记表 → (合并后的行, 冲突报告列表)。
+
+    规则（按 `编号` 对齐、**逐格**判归属）：
+
+    - 某一格：我们没改 → 用磁盘上的（别人的改动得以保留）；
+      只有我们改了 → 用我们的；
+      **双方都改且不同 → 保留磁盘（别人后写的），并记入冲突报告**。
+    - 磁盘上有、我们没有的行 → 原样保留（别人新增的）。
+    - 我们有、磁盘上没有的行 → 追加（我们新增的）。
+    - **编号撞车**（双方各自新增却分到同一编号，但文件名/内容不同）→
+      把我们那一行改到下一个空编号，避免顶掉别人的身份字段。
+
+    为什么是合并而不是"发现改动就拒绝"：`batch_extract` 的窗口长达数分钟，
+    拒绝保存等于把整批抽取结果白扔；而整表覆盖会让别人的工作无声消失。
+    两者都不可接受，所以只能逐格合并——参考 git 的三方合并思路。
+    """
+    conflicts = []
+    base_by = {r.get("编号"): r for r in base}
+    theirs_by = {r.get("编号"): r for r in theirs}
+    theirs_order = [r.get("编号") for r in theirs]
+
+    # ★kept_ids 记的是「我们最终占用了哪些编号」，**不是**读进来的原编号：
+    #   若某行因编号撞车被改号，原编号就没有被我们占用，他人那一行必须补回来。
+    #   （2026-10-08 踩过：用原编号记集合，导致重编号后他人的行被整批丢掉——
+    #    单测里期望 4 行、实际只剩 2 行。）
+    merged, kept_ids = [], set()
+    for o in ours:
+        rid = o.get("编号")
+        t_row, b_row = theirs_by.get(rid), base_by.get(rid)
+
+        # ① 我们新加的行：磁盘上没有 → 直接追加
+        if b_row is None and rid not in theirs_by:
+            merged.append(dict(o))
+            kept_ids.add(rid)
+            continue
+        # ② 编号撞车：双方各自新增、却分到同一编号 → 让位重编号
+        if b_row is None and t_row is not None:
+            same = (o.get("sha1") or "") and o.get("sha1") == t_row.get("sha1")
+            if o.get("文件名") != t_row.get("文件名") and not same:
+                new_id = f"L{_next_index(merged + theirs, 'L'):04d}"
+                moved = dict(o)
+                moved["编号"] = new_id
+                _append_note(moved, f"并发合并：原编号 {rid} 已被他人占用（{t_row.get('文件名')}），"
+                                    f"本行改编号为 {new_id}")
+                merged.append(moved)
+                kept_ids.add(new_id)
+                conflicts.append((rid, ["编号"], f"让位重编号为 {new_id}"))
+                continue
+            merged.append(dict(t_row))
+            kept_ids.add(rid)
+            continue
+        # ③ 双方都有这一行：逐格判归属
+        if t_row is None:
+            merged.append(dict(o))
+            kept_ids.add(rid)
+            continue
+        merged_row, changed_fields = dict(t_row), []
+        for k, v in o.items():
+            if v == (b_row.get(k) or ""):
+                continue                          # 我们没改这一格 → 保留别人的
+            if (t_row.get(k) or "") not in ((b_row.get(k) or ""), v):
+                changed_fields.append(k)          # 双方都改且不同 → 冲突，保留别人的
+            else:
+                merged_row[k] = v                 # 只有我们改了 → 应用我们的
+        if changed_fields:
+            conflicts.append((rid, changed_fields,
+                              "双方都改了这一格，已保留磁盘版（他人）的改动"))
+        merged.append(merged_row)
+        kept_ids.add(rid)
+
+    # 别人新增的行，按磁盘顺序补在后面（kept_ids 只含我们真正占用的编号）
+    for rid in theirs_order:
+        if rid and rid not in kept_ids:
+            merged.append(dict(theirs_by[rid]))
+
+    # 合并会打乱顺序；按编号排一次，使结果稳定可复现
+    def _ord(row):
+        m = re.fullmatch(r"L(\d+)", row.get("编号", "") or "")
+        return (0, int(m.group(1))) if m else (1, 0)
+    merged.sort(key=_ord)
+    return merged, conflicts
+
+
+def save_registry(path: str, fields: list, rows: list,
+                  allow_external_change: bool = False) -> None:
+    """原子写：先写临时文件再 replace，避免中断留下半张表。
+
+    ★保存前会检查登记表是否在本次加载之后被别人改过；改过就**先合并再写**，
+    并在 stderr 报告冲突格（`allow_external_change=True` 可跳过合并、直接覆盖）。
+    """
+    key = os.path.abspath(path)
+    base = _LOADED_BASE.get(key)
+    if base is not None and not allow_external_change:
+        current = _sync_fingerprint(path)
+        if current != _sync_fingerprint_at_load(key):
+            _fields_now, theirs = load_registry(path)
+            rows, conflicts = merge_registry_rows(base, rows, theirs)
+            if conflicts:
+                print(f"⚠️  检测到并发写入，已逐格合并 {path}（共 {len(conflicts)} 处冲突）：",
+                      file=sys.stderr)
+                for rid, fields_, why in conflicts[:10]:
+                    print(f"      {rid}：{ '、'.join(fields_) } —— {why}", file=sys.stderr)
+            else:
+                print(f"ℹ️  检测到并发写入，已合并他人新增的行：{path}", file=sys.stderr)
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", newline="", encoding="utf-8") as fh:
@@ -217,6 +343,15 @@ def save_registry(path: str, fields: list, rows: list) -> None:
         for row in rows:
             writer.writerow({f: row.get(f, "") for f in fields})
     os.replace(tmp, path)
+    _LOADED_BASE[key] = [dict(r) for r in rows]
+    _LOADED_FP[key] = _sync_fingerprint(path)
+
+
+_LOADED_FP = {}
+
+
+def _sync_fingerprint_at_load(key: str):
+    return _LOADED_FP.get(key)
 
 
 def _next_index(rows: list, prefix: str = "L") -> int:

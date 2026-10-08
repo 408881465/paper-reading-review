@@ -8,6 +8,7 @@
 """
 
 import csv
+import hashlib
 import os
 
 import pytest
@@ -267,3 +268,160 @@ def test_status_flags_triaged_but_not_decoded(tmp_path, capsys):
     sc.save_registry(reg, fields, rows)
     sc.main(["status", reg])
     assert "尚未解码" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- 并发写入（多人并行派活）
+# batch-workflow §6 规定"按主题切分、各人写各自目录"，于是**必然多人同时写同一张登记表**，
+# 而脚本是「整表读入 → 内存改 → 整表写回」，窗口在 batch_extract 里长达数分钟。
+# 2026-10-08 用真实文件确定性复现两例：
+#   ① 甲跑 batch_extract 时乙 attach 挂 OCR 文本 → 乙的状态与备注被清空；
+#   ② 甲乙各 scan 自己的目录 → 甲的登记全部消失（5/10），双方退出码都是"成功"。
+
+def _row(rid, name, **kw):
+    row = {f: "" for f in sc.REGISTRY_FIELDS}
+    # sha1 按**文件名**派生：若按编号派生，"甲1.pdf"与"乙1.pdf"会拿到同一 sha1，
+    # 于是被当成同一份文件而走去重分支——那不是本组测试要测的丢更新。
+    row.update({"编号": rid, "文件名": name, "sha1": hashlib.sha1(name.encode()).hexdigest()})
+    row.update(kw)
+    return row
+
+
+def test_merge_renumbers_colliding_new_rows_without_dropping_others():
+    """★双方各自新增却分到同一编号 → 我们那行让位重编号，**他人的行必须补回来**。
+
+    这里踩过一次：用一个"读进来的原编号"集合去判断"哪些行已经处理过"，
+    重编号后原编号并未被占用，却仍被当成已处理，导致他人的行被整批丢掉。
+    """
+    ours = [_row("L0001", "甲1.pdf"), _row("L0002", "甲2.pdf")]
+    theirs = [_row("L0001", "乙1.pdf"), _row("L0002", "乙2.pdf")]
+    merged, conflicts = sc.merge_registry_rows([], ours, theirs)
+    assert {r["文件名"] for r in merged} == {"乙1.pdf", "乙2.pdf", "甲1.pdf", "甲2.pdf"}, \
+        [r["文件名"] for r in merged]
+    assert len({r["编号"] for r in merged}) == 4, "重编号撞车"
+    assert len(conflicts) == 2
+
+
+def test_merge_keeps_theirs_when_both_changed_same_cell():
+    """同一格双方都改且不同 → 保留磁盘（他人后写的），并报冲突。"""
+    base = [_row("L0001", "x.pdf")]
+    ours = [_row("L0001", "x.pdf", 解码状态="已抽文本")]
+    theirs = [_row("L0001", "x.pdf", 解码状态="已OCR", 备注="乙挂的")]
+    merged, conflicts = sc.merge_registry_rows(base, ours, theirs)
+    assert merged[0]["解码状态"] == "已OCR"
+    assert merged[0]["备注"] == "乙挂的"
+    assert conflicts and conflicts[0][1] == ["解码状态"]
+
+
+def test_merge_applies_our_change_to_untouched_cells_only():
+    """我们改了的格应用、没改的格保留他人的——两边互不覆盖。"""
+    base = [_row("L0001", "x.pdf", 解码状态="未处理", 主题分类="旧")]
+    ours = [_row("L0001", "x.pdf", 解码状态="已抽文本", 主题分类="旧")]
+    theirs = [_row("L0001", "x.pdf", 解码状态="未处理", 主题分类="新")]
+    merged, conflicts = sc.merge_registry_rows(base, ours, theirs)
+    assert merged[0]["解码状态"] == "已抽文本", "我们改过的格应生效"
+    assert merged[0]["主题分类"] == "新", "我们没碰的格应保留他人的"
+    assert not conflicts
+
+
+def test_merge_keeps_their_new_rows_and_ours():
+    """他人新增的行、我们新增的行，都要在结果里。"""
+    base = [_row("L0001", "旧.pdf")]
+    ours = [_row("L0001", "旧.pdf"), _row("L0002", "我们的新.pdf")]
+    theirs = [_row("L0001", "旧.pdf"), _row("L0003", "他人的新.pdf")]
+    merged, _ = sc.merge_registry_rows(base, ours, theirs)
+    assert {r["文件名"] for r in merged} == {"旧.pdf", "我们的新.pdf", "他人的新.pdf"}
+
+
+def _write_registry_raw(path, fields, rows):
+    """**绕过 load/save** 直接写盘——用来模拟"另一个进程"的写入。
+
+    必须绕开 sc.save_registry，否则会刷新本进程记录的文件指纹，
+    检测逻辑就不会触发（测试也就测不到东西）。
+    """
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.DictWriter(fh, fieldnames=fields)
+        w.writeheader()
+        for r in rows:
+            w.writerow({f: r.get(f, "") for f in fields})
+
+
+def test_save_registry_detects_and_merges_external_change(tmp_path):
+    """★主路径：加载后文件被**别的进程**改过，保存时必须先合并再写。
+
+    这一条锁的是"检测外部改动"本身。只测 merge_registry_rows（单元级）
+    或传 allow_external_change=True，都会绕过检测——变异测试证实过：
+    把检测关掉，那两条仍然全绿。
+    """
+    reg = str(tmp_path / "reg.csv")
+    sc.main(["init", reg])
+    fields, rows = sc.load_registry(reg)
+    rows.append(_row("L0001", "甲.pdf", 解码状态="已抽文本", 主题分类="甲的判断"))
+    sc.save_registry(reg, fields, rows)
+
+    # 本进程重新加载（= 记住基线），随后**别人**改了同一行的另一格
+    fields, rows = sc.load_registry(reg)
+    theirs = [dict(r) for r in rows]
+    theirs[0]["解码状态"] = "已OCR"
+    theirs[0]["备注"] = "另一个进程挂的"
+    _write_registry_raw(reg, fields, theirs)          # ← 绕过 save，模拟外部写入
+
+    # 我们保存时改的是**另一格**：合并后两边的改动都应在
+    rows[0]["主题分类"] = "我们的判断"
+    sc.save_registry(reg, fields, rows)
+
+    result = _read(reg)[0]
+    assert result["解码状态"] == "已OCR", "检测未触发：他人的改动被整表覆盖了"
+    assert "另一个进程挂的" in result["备注"]
+    assert result["主题分类"] == "我们的判断", "我们的改动没写进去"
+
+
+def test_save_registry_reports_conflict_on_same_cell(tmp_path, capsys):
+    """同一格双方都改 → 保留磁盘版（他人），并在 stderr 报冲突。"""
+    reg = str(tmp_path / "reg.csv")
+    sc.main(["init", reg])
+    fields, rows = sc.load_registry(reg)
+    rows.append(_row("L0001", "甲.pdf", 解码状态="未处理"))
+    sc.save_registry(reg, fields, rows)
+
+    fields, rows = sc.load_registry(reg)
+    theirs = [dict(r) for r in rows]
+    theirs[0]["解码状态"] = "已OCR"
+    _write_registry_raw(reg, fields, theirs)
+
+    rows[0]["解码状态"] = "已抽文本"                   # 同一格，双方都改
+    sc.save_registry(reg, fields, rows)
+
+    assert _read(reg)[0]["解码状态"] == "已OCR", "同格冲突应保留他人的"
+    assert "并发" in capsys.readouterr().err
+
+
+def test_save_registry_merges_rows_added_by_others(tmp_path):
+    """别人新增的行不能在保存时丢掉。"""
+    reg = str(tmp_path / "reg.csv")
+    sc.main(["init", reg])
+    fields, rows = sc.load_registry(reg)
+    rows.append(_row("L0001", "甲.pdf"))
+    sc.save_registry(reg, fields, rows)
+
+    fields, rows = sc.load_registry(reg)
+    theirs = [dict(r) for r in rows] + [_row("L0009", "他人新增.pdf")]
+    _write_registry_raw(reg, fields, theirs)
+
+    rows.append(_row("L0010", "我们新增.pdf"))
+    sc.save_registry(reg, fields, rows)
+
+    names = {r["文件名"] for r in _read(reg)}
+    assert names == {"甲.pdf", "他人新增.pdf", "我们新增.pdf"}, names
+
+
+def test_scan_twice_in_sequence_has_no_false_conflict(tmp_path):
+    """幂等性不能被并发检查破坏：顺序执行的两次 scan 不该报冲突。"""
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    _write(src / "甲.pdf")
+    sc.main(["init", reg])
+    assert sc.main(["scan", reg, "--source", str(src)]) is not None
+    before = _read(reg)
+    sc.main(["scan", reg, "--source", str(src)])
+    assert _read(reg) == before, "重复扫描不该改动登记表"
