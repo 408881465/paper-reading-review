@@ -67,3 +67,28 @@ def test_header_noise_is_removed():
 def test_paragraph_structure_is_preserved():
     raw = "第一段第一句。\n第一段第二句。\n\n\n\n第二段。\n"
     assert E.clean_page_text(raw) == "第一段第一句。\n第一段第二句。\n\n第二段。"
+
+
+# ---------------------------------------------------------------- 页码行判据（真实文献实测）
+def test_page_number_value_accepts_chinese_footer_decoration():
+    """★中国学术期刊页脚是 `— 146`，不是纯数字。
+
+    实测 L0186 各页页脚为 `— 146`／`— 147`／`— 148`…、L0102 为 `— 147` 起，
+    偏移恒定（+145／+146）。旧判据 `^\\s*\\d{1,4}\\s*$` 全部拒收 →
+    整篇不做印刷页码标注，而"证据可回指"正依赖它。
+    """
+    for line, val in [("— 146", 146), ("-147", 147), ("· 148", 148),
+                      ("[149]", 149), ("第 150 页", 150), ("  151  ", 151)]:
+        assert E.page_number_value(line) == val, f"{line!r} 应判为页码 {val}"
+    for line in ["Page 12 of 17", "2020.12", "—", "第 146 节", "16—06", "正文"]:
+        assert E.page_number_value(line) is None, f"{line!r} 不应判为页码"
+
+
+def test_western_page_footer_is_deliberately_not_accepted():
+    """`Page 12 of 17` 标的是文档内页序，不是印刷页码——刻意不认。
+
+    是否一致需要外部信号判断，而 batch_extract 的 help 明确
+    "没有外部验证就不要标注"；返回 None（=不标注）是安全结果。
+    """
+    assert E.page_number_value("Page 12 of 17") is None
+    assert E.page_number_value("Page 12") is None

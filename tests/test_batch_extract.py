@@ -384,3 +384,30 @@ def test_extract_message_is_not_appended_twice(project):
 
     note = _read(reg)[0]["备注"]
     assert note.count("无文本层") == 1, f"备注被重复追加：{note}"
+
+
+def test_decorated_page_numbers_yield_the_right_offset():
+    """★页脚带破折号的中文期刊也要能推出偏移（此前整类漏检）。
+
+    构造 6 页、每页页脚为 `— (页序+145)` 的真实形态，应推出 145。
+    """
+    doc_raw = [f"正文内容\n—\n— {i + 146}" for i in range(6)]
+    assert be.detect_printed_offset(doc_raw) == 145
+
+
+def test_detect_printed_offset_shares_criterion_with_extractor():
+    """两处判据必须是**同一份**：此前各写一份正则，修一处漏一处。
+
+    实测教训：中文期刊页脚 `— 146` 在两边都不认，于是整篇不做印刷页码标注。
+    """
+    ex = be._load_extractor()
+    # ★必须给足页数：采信门槛是 hits ≥ max(2, 半数页)，单页永远返回 None
+    #   （这是合理设计——一页无法证明"偏移恒定"）。
+    decorated = [f"正文\n— {i + 146}" for i in range(4)]
+    assert be.detect_printed_offset(decorated, ex) == 145
+
+    western = [f"正文\nPage {i + 1} of 17" for i in range(4)]
+    assert be.detect_printed_offset(western, ex) is None, "西文页脚不该被当作印刷页码"
+
+    noisy = [f"正文\n2020.12" for _ in range(4)]
+    assert be.detect_printed_offset(noisy, ex) is None

@@ -238,3 +238,82 @@ def test_no_misaligned_fragment_in_top_candidates():
     ranked = [(w, c) for w, c in B.cluster_hint(rows)]
     misaligned = B.mark_misaligned(ranked)
     assert not misaligned, f"候选中仍有错位碎片：{misaligned}"
+
+
+# ---------------------------------------------------------------- --stopwords / --keep 的文件层
+# （2026-10-08 用真实 RCOS 表实测后补：函数级行为已有测试，缺的是文件装载与 CLI 接线）
+
+def test_load_stopwords_skips_comments_and_blanks(tmp_path):
+    """`#` 注释与空行不得进词表——否则注释里的字会被当成停用词。"""
+    f = tmp_path / "sw.txt"
+    f.write_text("# 本课题语料的套话\n\n课程\n  人工智能教育  \n\n# 又一条注释\n建设\n",
+                 encoding="utf-8")
+    words = B.load_stopwords(str(f))
+    assert words == {"课程", "人工智能教育", "建设"}
+    assert not any(w.startswith("#") for w in words)
+
+
+def test_expand_blocked_is_one_directional():
+    """★展开是**单向**的：只把短语展开成它的子串，不向上覆盖更长的碎片。
+
+    在 `expand_blocked` 层测——这是确定性机制，不受聚类启发式的取舍影响。
+    实测（真实 RCOS 表）：停用「人工智能教育」（完整短语）能覆盖滑窗切出的
+    碎片「人工智能教」；只停用「人工智能」（短形式）则覆盖不到它，
+    因为「人工智能教」比它长、不是它的子串。**所以停用词要写完整短语。**
+    """
+    assert "人工智能" in B.expand_blocked({"人工智能"})
+    assert "人工智能教" not in B.expand_blocked({"人工智能"}), "短形式本就不该向上覆盖"
+
+    full = B.expand_blocked({"人工智能教育"})
+    assert "人工智能教育" in full
+    assert "人工智能教" in full, "完整短语应覆盖由它切出的碎片"
+    assert "人工" in full and "智能" in full
+
+
+def test_stopwords_substring_expansion_can_over_filter_and_keep_rescues():
+    """★子串展开会连带滤掉真主题；`--keep` 是它的解药。
+
+    停用「课程整合」会因展开而连带滤掉「课程」——这是 docstring 里承认的代价。
+    """
+    # 注意：词频需 ≥ min_count(2)，故同一短语要给到 3 行；
+    # 且 DISPLAY_MAX=6，过长短语不会被展示。
+    rows = [{"rof": f"人工智能教育课程建设与课程整合研究{i}", "spl": "", "cpl": "", "gap": ""}
+            for i in range(3)]
+    base = B.cluster_hint(rows)
+    assert any(w == "课程" for w, _ in base), "前置条件：基线里应有「课程」"
+
+    blocked = B.cluster_hint(rows, extra_stopwords={"课程整合"})
+    assert not any(w == "课程" for w, _ in blocked), "子串展开应连带滤掉「课程」"
+
+    rescued = B.cluster_hint(rows, extra_stopwords={"课程整合"}, keepwords={"课程"})
+    assert any(w == "课程" for w, _ in rescued), "--keep 没能救回被连带滤掉的词"
+
+
+def test_cli_stopwords_file_missing_exits_1(tmp_path):
+    path = write_csv(tmp_path / "sw.csv", [
+        row(1, "甲", 2020, "数字化转型推动教学变革", "批评", "空白", "结果"),
+    ])
+    res = run("rcos", str(path), "--stopwords", str(tmp_path / "没有这个文件.txt"))
+    assert res.returncode == 1
+    assert "不存在" in res.stderr
+
+
+def test_cli_stopwords_and_keep_files_are_wired(tmp_path):
+    rows = [
+        row(1, "甲", 2020, "数字化转型推动教学变革", "批评", "空白", "结果"),
+        row(2, "乙", 2021, "数字化转型影响教师角色", "批评", "空白", "结果"),
+    ]
+    path = write_csv(tmp_path / "sw.csv", rows)
+    sw = tmp_path / "sw.txt"
+    sw.write_text("数字化转型\n", encoding="utf-8")
+    keep = tmp_path / "keep.txt"
+    keep.write_text("数字化转型\n", encoding="utf-8")
+
+    base = run("rcos", str(path))
+    assert "数字化转型" in base.stdout
+
+    filtered = run("rcos", str(path), "--stopwords", str(sw))
+    assert "数字化转型" not in filtered.stdout
+
+    restored = run("rcos", str(path), "--stopwords", str(sw), "--keep", str(keep))
+    assert "数字化转型" in restored.stdout, "--keep 未接线到 CLI"

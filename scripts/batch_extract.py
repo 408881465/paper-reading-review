@@ -164,7 +164,7 @@ def safe_filename(text: str, limit: int = 60) -> str:
     return text[:limit].strip("._-") or "untitled"
 
 
-def detect_printed_offset(pages_raw):
+def detect_printed_offset(pages_raw, extractor=None):
     """推断「印刷页码 − PDF 序」的恒定偏移；推不出就返回 None。
 
     为什么必须做这件事（2026-10-07 独立校验发现的系统性问题）：
@@ -188,6 +188,8 @@ def detect_printed_offset(pages_raw):
     「FOCUS／本期策划」这类栏目眉（实测清华大中小学一文，印刷页码在第 3 行），
     只看首行会整体漏检——漏检后所有引用印刷页码的产出都无法被机械核对。
     """
+    if extractor is None:                      # 便于单测直接调用
+        extractor = _load_extractor()
     window = 5
     candidates = []
     for idx, raw in enumerate(pages_raw):
@@ -196,8 +198,12 @@ def detect_printed_offset(pages_raw):
             continue
         edge = lines[:window] + (lines[-window:] if len(lines) > window else [])
         for line in edge:
-            if re.fullmatch(r"\d{1,4}", line):
-                candidates.append(int(line) - (idx + 1))
+            # 页码判据与 extract_pdf_text.page_number_value **共用同一份**：
+            # 此前两处各写一份正则，于是「什么算页码」有两个来源，
+            # 修好一处漏掉另一处（实测中文期刊页脚 `— 146` 两边都不认）。
+            value = extractor.page_number_value(line)
+            if value is not None:
+                candidates.append(value - (idx + 1))
     if not candidates:
         return None
     counts = {}
@@ -238,7 +244,7 @@ def extract_one(pdf_path: str, out_path: str, extractor, with_printed_labels: bo
         doc.close()
 
     page_number_lines = extractor.detect_page_number_lines(pages_raw)
-    offset = detect_printed_offset(pages_raw)
+    offset = detect_printed_offset(pages_raw, extractor)
     chunks, empty_pages = [], []
     for offset_idx, raw in enumerate(pages_raw):
         drop_positions = {pos for idx, pos in page_number_lines if idx == offset_idx}

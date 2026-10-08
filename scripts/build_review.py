@@ -567,7 +567,11 @@ def main() -> int:
     p_rcos.add_argument("csv_path", help="RCOS CSV 路径")
     p_rcos.add_argument("--check-only", action="store_true", help="只做完备性检查")
     p_rcos.add_argument("--stopwords", metavar="FILE",
-                        help="补充停用词文件（每行一个，# 开头为注释）")
+                        help="补充停用词文件（每行一个，# 开头为注释）。"
+                             "★两条实测注意：① 请写**完整短语**（如「人工智能教育」）"
+                             "——词表按子串展开，只写短形式「人工智能」滤不掉由它延伸出的"
+                             "更长碎片「人工智能教」；② 子串展开会**连带滤掉真主题**"
+                             "（「课程整合」会连带滤掉「课程」），用 --keep 可救回")
     p_rcos.add_argument("--keep", metavar="FILE",
                         help="白名单文件：其中的词一律保留，不被停用词规则滤掉")
 

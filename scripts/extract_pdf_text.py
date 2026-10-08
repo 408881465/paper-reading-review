@@ -36,7 +36,32 @@ _HYPHEN_BREAK = re.compile(r"([^\W\d_])-\n(\w)", re.UNICODE)
 _MULTI_BLANK = re.compile(r"\n{3,}")
 _MULTI_SPACE = re.compile(r"[ \t]{2,}")
 # 单独成行的页码/裸数字
-_LONE_DIGITS = re.compile(r"^\s*\d{1,4}\s*$")
+# 「页码行」的**单一判据**（本模块与 batch_extract.py 共用，别再各写一份）。
+#
+# ★为什么不能只认纯数字（2026-10-08 用真实文献实测）：
+#   中国学术期刊的页脚普遍写成 **`— 146`**（破折号＋空格＋数字）。
+#   实测 L0186 各页页脚是 `— 146`／`— 147`／`— 148`…、L0102 是 `— 147` 起，
+#   偏移恒定（+145／+146），但旧的 `^\s*\d{1,4}\s*$` 全部拒收 →
+#   `detect_printed_offset` 返回 None → **整篇不做印刷页码标注**，
+#   而"证据可回指"正依赖这个标注。人眼一眼能看出的偏移，脚本却推不出。
+#
+# ★刻意**不认** `Page 12 of 17` 这类西文页脚：它标的是**文档内页序**而非印刷页码，
+#   二者是否一致需要外部信号判断；batch_extract 的 help 已明确
+#   "没有外部验证就不要标注"，所以这里保持不认（返回 None 是安全结果）。
+_PAGE_DECOR = r"[\s—–\-−·•*|［\[\]］]"
+_PAGE_LINE = re.compile(rf"^{_PAGE_DECOR}*(\d{{1,4}}){_PAGE_DECOR}*$")
+_PAGE_CN = re.compile(r"^\s*第\s*(\d{1,4})\s*页\s*$")
+
+
+def page_number_value(line: str):
+    """这一行是不是页码？是则返回其数值，否则 None。
+
+    接受：`146`、`— 146`、`-146`、`· 146`、`[146]`、`第 146 页`。
+    不接受：`Page 12 of 17`（语义需外部信号，见上）、`2020.12`（含其它字符）。
+    """
+    stripped = line.strip()
+    m = _PAGE_LINE.match(stripped) or _PAGE_CN.match(stripped)
+    return int(m.group(1)) if m else None
 
 # 一页提取出的非空白字符少于这个数，基本可判定该页没有文本层（扫描件）。
 # 取值要低：表格页、参考文献页天然很短；真正的扫描页是 0 字符。
@@ -67,9 +92,9 @@ def detect_page_number_lines(pages_raw, min_ratio=0.5):
         if not filled:
             continue
         for pos, line_no in ((0, filled[0]), (1, filled[-1])):
-            stripped = lines[line_no].strip()
-            if _LONE_DIGITS.match(stripped):
-                candidates.append((idx, pos, int(stripped)))
+            value = page_number_value(lines[line_no])
+            if value is not None:
+                candidates.append((idx, pos, value))
 
     if not candidates:
         return set()
