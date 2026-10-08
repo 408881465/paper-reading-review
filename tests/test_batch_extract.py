@@ -445,3 +445,20 @@ def test_unsupported_format_still_goes_to_other_extractor(project):
     sc.main(["scan", reg, "--source", str(src)])
     be.main(["--registry", reg, "--outdir", outdir])
     assert _read(reg)[0]["解码状态"] == "待其它提取器"
+
+
+def test_split_digit_page_footer_disables_labeling():
+    """★页脚页码被拆成相邻单数字 → 拒绝标注，而不是猜一个。
+
+    实测（2026-10-08，171 篇真实文献）：128 篇有标注的文件里 **10 篇（8%）**带此特征。
+    典型实证：某篇 PDF 1 末行 `['…人工智能', '3', '1']` —— 印刷页码 31 被抽成两个记号。
+    此时取任一个都会让整篇偏移差 10 的倍数，而**内部一致性查不出这类错**。
+    技能的既有立场是"标注错误比不标更坏"，故检出即不标注。
+    """
+    # 每页页脚都被拆成 '3' '1' 这类相邻单数字
+    pages = [f"正文内容若干\n3\n1" for _ in range(4)]
+    assert be.detect_printed_offset(pages) is None, "带拆分特征却仍标注了"
+
+    # 对照：正常两位数页脚（未被拆）应能推出偏移
+    normal = [f"正文内容若干\n{i + 31}" for i in range(4)]
+    assert be.detect_printed_offset(normal) == 30

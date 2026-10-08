@@ -194,6 +194,23 @@ def detect_printed_offset(pages_raw, extractor=None):
     if extractor is None:                      # 便于单测直接调用
         extractor = _load_extractor()
     window = 5
+
+    # ★守卫：页边缘出现 ≥2 个**单数字**行 → 页脚页码很可能是被拆开的两位数字，
+    #   此时**拒绝标注**。
+    #   依据（2026-10-08，171 篇真实文献实测）：128 篇有标注的文件里 10 篇（8%）带此特征。
+    #   典型实证：某篇 PDF 1 末行是 ['再次强调要推进人工智能', '3', '1']——
+    #   印刷页码 31 被抽成两个记号，取其一则**整篇偏移差 10 的倍数**。
+    #   本函数 docstring 早已写明这类错"内部一致性查不出"（偏移恒定、页序连续，
+    #   只是整体错），必须靠外部信号；而标注错误比不标更坏——
+    #   不标只损失可核对性，标错会让人按错的页码去引用。
+    def _split_digit_edge(raw: str) -> bool:
+        lines = [ln.strip() for ln in raw.replace("\r\n", "\n").split("\n") if ln.strip()]
+        edge = lines[:window] + (lines[-window:] if len(lines) > window else [])
+        return sum(1 for ln in edge if re.fullmatch(r"\d", ln)) >= 2
+
+    if sum(1 for raw in pages_raw if _split_digit_edge(raw)) >= max(2, 0.5 * len(pages_raw)):
+        return None
+
     candidates = []
     for idx, raw in enumerate(pages_raw):
         lines = [ln.strip() for ln in raw.replace("\r\n", "\n").split("\n") if ln.strip()]
@@ -310,6 +327,7 @@ def main(argv=None) -> int:
     dup_skipped = 0
     todo_docx = []
     img_need_ocr = 0      # 图片型：登记为需OCR，不在此处抽取
+    todo_text = []        # .md/.txt：纯文本，直接读
 
     todo = []
     for row in rows:
@@ -319,9 +337,24 @@ def main(argv=None) -> int:
                 row["解码状态"] = "源文件缺失"
             continue
         ext = os.path.splitext(src)[1].lower()
-        if ext not in (".pdf", ".docx", ".doc"):
+        if ext in (".md", ".txt"):
+            # .md/.txt 是**纯文本，本来就不需要抽取器**——直接读即可。
+            # 旧实现把它们归到「该格式暂无抽取器」，是误导（用户会去找工具）。
+            todo_text.append(row)
+            continue
+        if ext not in (".pdf", ".docx"):
             if row.get("解码状态") in ("", "未处理"):
-                if ext in _IMG_EXTS:
+                if ext == ".doc":
+                    # ★.doc 是 OLE2 复合文档（magic d0cf11e0），**不是 zip**，
+                    #   与 .docx 完全不同的格式。曾与 .docx 并作一支，结果
+                    #   真实 21 页的 .doc 被报「docx 解析失败：缺 word/document.xml」
+                    #   ——错误信息把人引向"文件坏了"，而其实只是格式不同。
+                    row["解码状态"] = "待其它提取器"
+                    row["备注"] = (row.get("备注", "") +
+                                   "；老版 .doc（OLE2 复合文档）与 .docx 并非同一格式，"
+                                   "需先转成 .docx/pdf（如 LibreOffice: "
+                                   "soffice --convert-to docx <文件>）").strip("；")
+                elif ext in _IMG_EXTS:
                     # ★图片是 **OCR 候选**，不是"没有抽取器"。
                     #   batch-workflow §3 的状态机写得很清楚：
                     #   「需OCR（**图片型**，先 OCR 再用 attach 回流）」，
@@ -340,7 +373,7 @@ def main(argv=None) -> int:
                     row["备注"] = (row.get("备注", "") +
                                    "；该格式暂无抽取器，需其它工具").strip("；")
             continue
-        if ext in (".docx", ".doc"):
+        if ext == ".docx":
             # .docx 不走 PDF 那条路（没有页码概念，回指基准是章节名）。
             # 2026-10-08 前这里一律标「待其它提取器」，而本课题 4 份政策文件
             # 全是 .docx（教育部通知、通识指南、上海素养框架、地方课程监测报告），
@@ -386,6 +419,8 @@ def main(argv=None) -> int:
     msg = f"待抽文本 {len(todo)} 篇（已抽的跳过）"
     if todo_docx:
         msg += f"；另有 {len(todo_docx)} 篇 .docx 走章节名回指（无页码标记）"
+    if todo_text:
+        msg += f"；另有 {len(todo_text)} 篇 .md/.txt 直接读入"
     if dup_skipped:
         msg += f"；另有 {dup_skipped} 篇已判为重复，按登记表的去重决定跳过"
     print(msg)
@@ -394,6 +429,8 @@ def main(argv=None) -> int:
             print(f"  · {row['编号']}  {row['文件名']}")
         for row in todo_docx:
             print(f"  · {row['编号']}  {row['文件名']}   [.docx]")
+        for row in todo_text:
+            print(f"  · {row['编号']}  {row['文件名']}   [纯文本]")
         return 0
 
     results = {"ok": 0, "需OCR": 0, "打不开": 0}
@@ -421,6 +458,38 @@ def main(argv=None) -> int:
             notes.append(f"{row['编号']} {row['文件名']}：{msg}")
         print(f"  [{status}] {row['编号']}  {row['文件名']}"
               + (f"  ({pages} 页 / {chars} 字)" if status == "ok" else f"  ← {msg}"))
+
+    # ---- .md/.txt 队列：纯文本直接读，回指基准是章节名（无 PAGE 标记）----
+    if todo_text:
+        for row in todo_text:
+            out = os.path.join(
+                args.outdir,
+                f"{row['编号']}_{safe_filename(row.get('标题') or row['文件名'])}.txt")
+            try:
+                with open(row["源路径"], encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError as exc:
+                row["解码状态"] = "打不开"
+                row["文本路径"] = ""
+                row["备注"] = (row.get("备注", "") + "；读取失败：" + str(exc)).strip("；")
+                results["打不开"] = results.get("打不开", 0) + 1
+                print(f"  [打不开] {row['编号']}  {row['文件名']}  ← {exc}")
+                continue
+            header = [
+                f"<!-- 来源：{os.path.basename(row['源路径'])}（纯文本，无页码）",
+                "     回指基准：**章节名**（见下方 Markdown 标题）；本文件不含 PAGE 标记。 -->",
+                "",
+            ]
+            body = "\n".join(header + [content]) + "\n"
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            chars = len(re.sub(r"\s", "", body))
+            row["页数"] = row.get("页数", "")
+            row["字符数"] = str(chars)
+            row["文本路径"] = out
+            row["解码状态"] = "已抽文本"
+            results["ok"] = results.get("ok", 0) + 1
+            print(f"  [ok] {row['编号']}  {row['文件名']}  (纯文本 / {chars} 字，按章节名回指)")
 
     # ---- .docx 队列：走 extract_docx_text，回指基准是章节名（无 PAGE 标记）----
     if todo_docx:

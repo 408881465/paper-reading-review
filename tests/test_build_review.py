@@ -317,3 +317,26 @@ def test_cli_stopwords_and_keep_files_are_wired(tmp_path):
 
     restored = run("rcos", str(path), "--stopwords", str(sw), "--keep", str(keep))
     assert "数字化转型" in restored.stdout, "--keep 未接线到 CLI"
+
+
+def test_skill_own_boilerplate_does_not_top_the_cluster_list():
+    """★技能**自己规定**的填写句式，不得占据聚类榜首。
+
+    实测（2026-10-08，课题真实 152 行 RCOS）：「批评」出现在 121/152 行（80%）、
+    「空白」127/152（84%）、「作者未对」「本文评述推断」各 71/152（47%）——
+    全部因为 batch-workflow §5 **要求**作者这样写（"作者未对任何前人文献提出批评"
+    是合规写法、「（本文评述推断）」是必须标的归属）。
+    技能教的写法污染技能自己的聚类，必须由技能自己停掉，不能推给用户 --stopwords。
+    """
+    # ★输入要够长：过短的文本（9 字 × 4 行）cluster_hint 返回**空表**，
+    #   那样断言就退化成"空表里当然没有套话"，测了个寂寞（本测试第一版即栽在此）。
+    rows = [{"rof": f"课程建设与跨学科协同机制的教学实践研究{i}",
+             "spl": "作者未对前人文献提出批评",
+             "cpl": "作者未明示空白（本文评述推断）", "gap": ""} for i in range(4)]
+    words = [w for w, _ in B.cluster_hint(rows)]
+    assert words, "前置条件：该输入应产出候选词，否则断言无意义"
+    for boiler in ("批评", "空白", "作者未", "评述推断", "明示", "前人文献", "未对前人"):
+        assert boiler not in words, f"技能自己的套话「{boiler}」仍进了候选主题词：{words}"
+    # 只要求"有内容词存活"，不指定具体词形：聚类会合并成更长的短语。
+    assert any(("教学" in w or "实践" in w or "课程" in w or "协同" in w) for w in words), \
+        f"真主题词被挤掉了：{words}"
