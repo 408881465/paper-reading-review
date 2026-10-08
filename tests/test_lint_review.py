@@ -538,3 +538,26 @@ def test_script_generated_extract_report_is_not_a_review_doc():
     assert lr.guess_form("02_文本/_提取报告.md", body) == "doc"
     res = lr.lint_text("02_文本/_提取报告.md", body, form="auto")
     assert res["errors"] == [] and res["warnings"] == []
+
+
+def test_form_a_requires_all_fourteen_codes_including_strategy_codes():
+    """★A 形态必须齐备**全部 14 个**密码（10 结构 + 4 策略）。
+
+    旧实现写的是 `CODE_NAMES[:10]`——只查前 10 个，于是详版可以完全不给
+    「批评点／明显的遗漏点／待探讨的相关问题／能否理顺」而 lint 报 OK。
+    这 4 个策略密码恰是技能的核心卖点（`reading-codes.md`：「读出作者**没**写什么」），
+    `review-workflow.md` 自检清单也要求「十个结构性密码与四个策略性密码已逐项覆盖」，
+    A 模板本身就有对应小节。
+
+    2026-10-09 用真实中文实证文测 A 形态时查出：稿子确实缺这 4 个密码名，
+    **而 lint 报「OK 未发现问题」**。影响面已核：24 份历史 A 形态导读全部齐备 14 个。
+    """
+    ten = "\n\n".join(f"## {n}\n\n内容。" for n in lr.CODE_NAMES[:10])
+    body = "# x\n\n## 一、导读摘要\n\n" + ten
+    res = lr.lint_text("x-导读.md", body, form="A", min_chars=0, max_chars=10 ** 9)
+    assert [e for e in res["errors"] if "缺密码栏" in e], "只给 10 个密码竟被判合格"
+
+    allc = "\n\n".join(f"## {n}\n\n内容。" for n in lr.CODE_NAMES)
+    body2 = "# x\n\n## 一、导读摘要\n\n" + allc
+    res2 = lr.lint_text("x-导读.md", body2, form="A", min_chars=0, max_chars=10 ** 9)
+    assert not [e for e in res2["errors"] if "缺密码栏" in e], "14 个齐备却被报缺"

@@ -520,7 +520,17 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
     # 7) 密码齐备（仅详版强制）
     if "codes" not in off:
         if form in FORMS_REQUIRING_ALL_CODES:
-            missing = [n for n in CODE_NAMES[:10] if n not in text]
+            # ★查**全部 14 个**（10 结构 + 4 策略）。
+            #   旧实现写的是 CODE_NAMES[:10]——**只查前 10 个**，于是详版可以完全不给
+            #   「批评点／明显的遗漏点／待探讨的相关问题／能否理顺」，而 lint 报 OK。
+            #   而这 4 个策略密码恰是技能的核心卖点：`reading-codes.md` 明说
+            #   「策略性密码是**读出作者没写什么**」，`review-workflow.md` 自检清单
+            #   也要求「十个结构性密码与四个策略性密码**已逐项覆盖**」；
+            #   A 模板本身就有对应小节（3.3 批评点 / 5.2 遗漏点与待探讨 / 5.4 能否理顺）。
+            #   2026-10-09 用一篇真实中文实证文测 A 形态时查出：我的导读确实缺这 4 个
+            #   密码名（用了"可议之处""局限"等替代说法），**而 lint 报「OK 未发现问题」**。
+            #   影响面已核：24 份历史 A 形态导读**全部齐备 14 个**，改严零误伤。
+            missing = [n for n in CODE_NAMES if n not in text]
             if missing:
                 errors.append(f"缺密码栏：{'、'.join(missing)}")
         else:
