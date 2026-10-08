@@ -40,7 +40,10 @@ _LONE_DIGITS = re.compile(r"^\s*\d{1,4}\s*$")
 
 # 一页提取出的非空白字符少于这个数，基本可判定该页没有文本层（扫描件）。
 # 取值要低：表格页、参考文献页天然很短；真正的扫描页是 0 字符。
-_SCANNED_PAGE_MIN_CHARS = 10
+# 「这一页是不是没有文本层」的判据阈值（去空白后的字符数）。
+# ★这不是局部常量：batch_extract.py 复用本模块时也读它（extractor.SCANNED_PAGE_MIN_CHARS），
+#   故保持公开名。调它会同时影响单篇抽取与批量抽取的「需OCR」判定。
+SCANNED_PAGE_MIN_CHARS = 10
 
 
 def _split_lines(raw: str):
@@ -170,7 +173,7 @@ def main() -> int:
     for offset, raw in enumerate(pages_raw):
         drop_positions = {pos for idx, pos in page_number_lines if idx == offset}
         cleaned = clean_page_text(raw, drop_positions=drop_positions)
-        if len(re.sub(r"\s", "", cleaned)) < _SCANNED_PAGE_MIN_CHARS:
+        if len(re.sub(r"\s", "", cleaned)) < SCANNED_PAGE_MIN_CHARS:
             empty_pages.append(start + offset)
         chunks.append(f"{MARKER.format(start + offset)}\n{cleaned}\n")
 

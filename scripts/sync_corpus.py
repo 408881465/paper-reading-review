@@ -163,7 +163,14 @@ def sha1_file(path: str, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def _norm_header(name: str) -> str:
+def _resolve_registry_field(name: str) -> str:
+    """把表头/字段名解析为登记表的规范字段名（先查别名表）。
+
+    ⚠️ 与 `build_review.norm_header()` **不是同一个操作**，别混用：
+      - `build_review.norm_header`：只做通用归一（小写 + 去空格标点），用于匹配 RCOS 列；
+      - 本函数：在归一前先查 `HEADER_ALIASES` 别名，返回的是**字段名**而非匹配键。
+    历史上两者同名（都叫 norm_header），读代码时极易串。
+    """
     key = name.strip().replace(" ", "").replace("\u3000", "")
     if key in REGISTRY_FIELDS:
         return key
@@ -177,7 +184,7 @@ def load_registry(path: str):
     with open(path, newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
         raw_fields = reader.fieldnames or []
-        fields = [_norm_header(f) for f in raw_fields]
+        fields = [_resolve_registry_field(f) for f in raw_fields]
         rows = []
         for raw in reader:
             row = {}

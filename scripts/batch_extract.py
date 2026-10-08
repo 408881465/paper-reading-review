@@ -46,9 +46,14 @@ except ImportError:                                   # 退路：允许单独拷
 
 # 允许中文、字母数字、下划线、点、连字符与加号（"AI+工程"这类标题要保留原样）
 _SAFE = re.compile(r"[^\w\u4e00-\u9fff.+\-]+")
-_SCANNED_MIN_CHARS = 10
+# 「需OCR」判据的阈值不在此处定义——唯一来源是 extract_pdf_text.SCANNED_PAGE_MIN_CHARS，
+# 由 extract_one() 通过传入的 extractor 读取（历史上这里另有一份同名常量，
+# 两处各自演化会导致单篇与批量对「扫描件」的判断不一致）。
 
 # 文件名里的重复标记，用于在同文本的多份文件里挑「最干净」的那份
+# 「副本标记」的判定。⚠️ sync_corpus.py 另有一份 `_DUP_SUFFIX`（带 $ 锚定、用于剥后缀求同名键）。
+# 两者职责不同（本处只**计数**用于同题多份时排序取原件，不删任何行），但同属「副本标记」这一概念；
+# 若日后要扩词（如「终版」「v2」），**两处都要改**，否则两个脚本会对同一文件给出不同的重复判断。
 _DUP_MARK = re.compile(r"副本|拷贝|复件|copy|[（(]\d+[）)]|[ _\-]\d+$", re.IGNORECASE)
 
 
@@ -190,7 +195,7 @@ def extract_one(pdf_path: str, out_path: str, extractor, with_printed_labels: bo
     for offset_idx, raw in enumerate(pages_raw):
         drop_positions = {pos for idx, pos in page_number_lines if idx == offset_idx}
         cleaned = extractor.clean_page_text(raw, drop_positions=drop_positions)
-        if len(re.sub(r"\s", "", cleaned)) < _SCANNED_MIN_CHARS:
+        if len(re.sub(r"\s", "", cleaned)) < extractor.SCANNED_PAGE_MIN_CHARS:
             empty_pages.append(offset_idx + 1)
         label = extractor.MARKER.format(offset_idx + 1)
         if offset is not None and with_printed_labels:
