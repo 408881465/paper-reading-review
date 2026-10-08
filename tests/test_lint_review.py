@@ -523,3 +523,18 @@ def test_card_upper_bound_is_calibrated_to_real_output():
     body = "# 单篇解码卡\n\n## 0. 题录\n\n## 1. 结构性密码\n\n## 2. 策略性密码\n\n" + "内容。" * 1550
     res = lr.lint_text("x-解码卡.md", body, form="auto", min_chars=0, max_chars=10 ** 9)
     assert not [w for w in res["warnings"] if "超过 card" in w], "实测最大值仍在报警"
+
+
+def test_script_generated_extract_report_is_not_a_review_doc():
+    """★脚本自己生成的报告不是 review 成稿。
+
+    实测（2026-10-09）：对工作区做**全库 lint** 时，`batch_extract` 生成的
+    `_提取报告.md`（27 字）被判成 B 形态，报"字数 27 低于 B 形态下限 800"——
+    于是"全库体检"一片红，而它根本不是人写的 review。
+    与 `DOC_FORM_SKIP` 处理模板是同一类问题：**别把工具自己的产出当成人稿检查**。
+    """
+    body = "# 批量抽文本报告\n\n- 本次处理：2 篇\n- 成功：2\n- 需 OCR：0\n"
+    assert lr.guess_form("_提取报告.md", body) == "doc"
+    assert lr.guess_form("02_文本/_提取报告.md", body) == "doc"
+    res = lr.lint_text("02_文本/_提取报告.md", body, form="auto")
+    assert res["errors"] == [] and res["warnings"] == []

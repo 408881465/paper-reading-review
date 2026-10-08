@@ -75,6 +75,11 @@ python3 scripts/lint_review.py <成稿.md> --form B
 #   看起来像技能出错，其实是 shell 拆词。
 find 03_解码卡 -name '*.md' -print0 | xargs -0 python3 scripts/lint_review.py
 
+# ★lint 检查的是 **review 成稿**——不要把整个工作区一把梭进去：
+#   工作区里还有非成稿文档（校验报告、你自己的笔记、脚本生成的报告等），
+#   它们会被按某个形态的字数区间检查而误报。技能自己生成的 `_提取报告.md`
+#   已按「规范文档」豁免；其余非成稿请用 `--form doc` 显式跳过。
+
 # .docx 会被 batch_extract 自动接走；也可单独抽（无页码，回指用章节名）
 python3 scripts/extract_docx_text.py <文件.docx> -o /tmp/policy.txt
 
