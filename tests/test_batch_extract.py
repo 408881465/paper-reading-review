@@ -6,6 +6,7 @@
 
 import csv
 import os
+import pathlib
 
 import pytest
 
@@ -251,3 +252,69 @@ def test_force_does_not_clobber_ocr_rows(project, tmp_path):
     be.main(["--registry", reg, "--outdir", outdir, "--force", "--no-dup-check"])
     row = _read(reg)[0]
     assert row["解码状态"] == "已OCR" and row["文本路径"] == str(ocr)
+
+
+# ---------------------------------------------------------------- 去重行不得被抽取
+# 2026-10-08 用真实 PDF 复现的缺陷：batch_extract 只按"有没有文本"挑行，
+# 于是照抽 sync_corpus 已判为重复的行（档位=去重-重复/纳入判定=去重/状态=跳过），
+# 把「跳过」覆盖成「已抽文本」，产出两份 sha1 完全相同的文本——
+# 正好制造了它自己在报告里警告的"同一篇文献被读两遍"。
+
+def test_is_dedup_row_recognises_all_three_markers():
+    assert be.is_dedup_row({"档位": "去重-重复"})
+    assert be.is_dedup_row({"纳入判定": "去重"})
+    assert be.is_dedup_row({"解码状态": "跳过"})
+    assert not be.is_dedup_row({"档位": "T2重要", "纳入判定": "纳入（背景）",
+                               "解码状态": "未处理"})
+    assert not be.is_dedup_row({})
+
+
+def test_dedup_row_is_not_extracted_and_keeps_skip_status(project, capsys):
+    """重复行不该被抽，其「跳过」状态不得被覆盖，且跳过要明说、不得静默。"""
+    reg, outdir, src = project
+    a = src / "文献A.pdf"
+    _make_pdf(a, ["内容 " * 60, "第二页 " * 60])
+    (src / "文献A 副本.pdf").write_bytes(a.read_bytes())     # 字节完全相同
+    sc.main(["scan", reg, "--source", str(src), "--record-duplicates"])
+
+    dup = [r for r in _read(reg) if r["档位"] == "去重-重复"]
+    assert dup, "未登记出重复行"
+    dup_id = dup[0]["编号"]
+    assert dup[0]["解码状态"] == "跳过"
+
+    assert be.main(["--registry", reg, "--outdir", outdir]) == 0
+
+    after = {r["编号"]: r for r in _read(reg)}
+    assert after[dup_id]["解码状态"] == "跳过", "去重行的「跳过」被覆盖了"
+    txts = list(pathlib.Path(outdir).glob("*.txt"))
+    assert len(txts) == 1, f"重复行也被抽了，产出 {len(txts)} 份文本"
+    out = capsys.readouterr().out
+    assert "重复" in out, "跳过重复行时必须明确提示，不得静默"
+
+
+def test_redo_ocr_alone_actually_re_extracts(project, tmp_path):
+    """回归：--redo-ocr 单独使用必须生效。
+
+    缺陷（2026-10-08 用真实登记表复现）：旧实现里「已OCR 保护」那条放行之后，
+    又被下一条「有文本且未给 --force 就跳过」拦住，于是**只给 --redo-ocr 完全无效**，
+    必须 --redo-ocr --force 同用——而 help 明说该参数"允许重新抽文本"。
+    """
+    reg, outdir, src = project
+    _make_blank_pdf(src / "扫描件_王五.pdf", n=2)
+    sc.main(["scan", reg, "--source", str(src)])
+    be.main(["--registry", reg, "--outdir", outdir, "--no-dup-check"])
+
+    ocr = tmp_path / "ocr.txt"
+    ocr.write_text("===== PAGE 1 =====\n已 OCR 的正文\n", encoding="utf-8")
+    fields, rows = sc.load_registry(reg)
+    rows[0]["文本路径"], rows[0]["解码状态"] = str(ocr), "已OCR"
+    sc.save_registry(reg, fields, rows)
+
+    # 默认：保护，不动
+    be.main(["--registry", reg, "--outdir", outdir, "--no-dup-check"])
+    assert _read(reg)[0]["解码状态"] == "已OCR"
+
+    # 只给 --redo-ocr：必须放行并重抽（该篇无文本层 → 回到 需OCR，文本路径清空）
+    be.main(["--registry", reg, "--outdir", outdir, "--redo-ocr", "--no-dup-check"])
+    row = _read(reg)[0]
+    assert row["解码状态"] == "需OCR", "--redo-ocr 单独使用未生效"

@@ -111,6 +111,16 @@ def _load_extractor():
         return module
 
 
+def is_dedup_row(row) -> bool:
+    """该行是否已被 `sync_corpus` 判为重复——即"不要处理这一行"的决定。
+
+    三个字段任一命中即算：档位含「重复」（去重-重复）、纳入判定＝去重、状态＝跳过。
+    """
+    return ("重复" in (row.get("档位") or "")
+            or (row.get("纳入判定") or "") == "去重"
+            or (row.get("解码状态") or "") == "跳过")
+
+
 def safe_filename(text: str, limit: int = 60) -> str:
     text = _SAFE.sub("_", (text or "").strip()) or "untitled"
     return text[:limit].strip("._-") or "untitled"
@@ -250,6 +260,7 @@ def main(argv=None) -> int:
 
     extractor = _load_extractor()
     os.makedirs(args.outdir, exist_ok=True)
+    dup_skipped = 0
 
     todo = []
     for row in rows:
@@ -268,16 +279,42 @@ def main(argv=None) -> int:
         # 已是 OCR 结果的图片型文献必须保护：重抽只可能再得"需OCR"，
         # 却会把 文本路径 清空、状态打回"需OCR"——静默回退（2026-10-07 实测踩过：
         # 一次 --force 重抽把两篇 OCR 过的文献打回原点，直到盘点才发现）。
-        if row.get("解码状态") == "已OCR" and have and os.path.exists(have) and not args.redo_ocr:
+        # ★OCR 行是否放行**只由 --redo-ocr 决定**；非 OCR 行才受 --force 影响。
+        #   旧实现是两个平列的 continue：
+        #     ① 已OCR + 有文本 + 未给 --redo-ocr → 跳过（保护；该条不看 --force，
+        #        故 --force 一直**没能**破坏 OCR 结果，既有测试 test_force_does_not_
+        #        clobber_ocr_rows 一直在守这一点）
+        #     ② 有文本 + 未给 --force → 跳过
+        #   缺陷在于①放行后又被②拦住：**只给 --redo-ocr（不给 --force）时完全无效**，
+        #   而 help 明说该参数"允许对已 OCR 的图片型文献重新抽文本"
+        #   （2026-10-08 用真实登记表复现：默认 0 篇、--redo-ocr 仍 0 篇、
+        #   必须 --redo-ocr --force 才变 4 篇）。
+        #   现在合并为一条判据：OCR 行仅凭 --redo-ocr 即放行，且不受 --force 影响。
+        if row.get("解码状态") == "已OCR":
+            if not args.redo_ocr:
+                continue
+        elif have and os.path.exists(have) and not args.force:
             continue
-        if have and os.path.exists(have) and not args.force:
+        # ★去重行不得被抽取。sync_corpus 判定它与另一行内容相同时，已把
+        #   档位置为「去重-重复」、纳入判定置为「去重」、状态置为「跳过」——
+        #   那是**"不要处理这一行"的决定**。
+        #   历史缺陷（2026-10-08 用真实 PDF 复现）：本脚本只按"有没有文本"挑行，
+        #   于是照抽去重行、把「跳过」覆盖成「已抽文本」，产出两份 sha1 完全相同的
+        #   文本——**正好制造了它自己在报告里警告的"同一篇文献被读两遍"**，
+        #   并使该行自相矛盾（档位说重复、状态说已抽）。
+        #   这里只跳过并计数（不静默），从而兑现 docstring 里"不改判断字段"的承诺。
+        if is_dedup_row(row):
+            dup_skipped += 1
             continue
         todo.append(row)
 
     if args.limit:
         todo = todo[:args.limit]
 
-    print(f"待抽文本 {len(todo)} 篇（已抽的跳过）")
+    msg = f"待抽文本 {len(todo)} 篇（已抽的跳过）"
+    if dup_skipped:
+        msg += f"；另有 {dup_skipped} 篇已判为重复，按登记表的去重决定跳过"
+    print(msg)
     if args.dry_run:
         for row in todo:
             print(f"  · {row['编号']}  {row['文件名']}")

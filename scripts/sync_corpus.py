@@ -407,6 +407,12 @@ def cmd_status(args) -> int:
             problems.append(f"{row['编号']} 标记已解码但未填产出文件：{row['文件名']}")
         if status == "跳过" and "重复" not in tier and "重复" not in row.get("备注", ""):
             problems.append(f"{row['编号']} 状态为跳过但未说明理由：{row['文件名']}")
+        # 反向检查：去重行必须保持「跳过」。曾经 batch_extract 会把去重行照抽一遍
+        # 并把状态覆盖成「已抽文本」，使它自相矛盾（档位说重复、状态说已抽），
+        # 同时产出两份 sha1 相同的文本——已修，这条检查用于防止回归。
+        if "重复" in tier and status != "跳过":
+            problems.append(f"{row['编号']} 档位为「{tier}」但状态是「{status or '未处理'}」："
+                            f"去重决定未落实或被覆盖，须复核：{row['文件名']}")
         if row.get("纳入判定") == "待核查":
             problems.append(f"{row['编号']} 待核查：{row['文件名']}（{row.get('备注') or '无备注'}）")
     print(f"\n【待办／异常】{len(problems)} 条")
