@@ -380,3 +380,70 @@ def test_init_and_shipped_template_agree_on_columns(tmp_path):
     _bm.cmd_init(str(out))
     got = out.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
     assert got == SPEC_5_3, f"init 生成的表头与 §5.3 不符：{got}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 20 列 RCOS 的**唯一映射**：poc / rpp 撞名事件
+# 2026-10-09 用一份 11 行 × 20 列的 RCOS 做形态 B 规模测试时查出。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_every_spec_column_maps_to_a_distinct_canonical():
+    """★★ 关键：§5.3 的 20 列必须**各自映射到唯一规范名**，不能两列撞一个。
+
+    此前 `poc` 的别名集里同时含「批评点」与「待探讨的相关问题」，两列撞同一规范名，
+    而 `resolve_columns` 的 `setdefault` 只保留第一个 →
+    **「待探讨的相关问题」整列数据静默丢失**，且**既不在映射也不在 `unknown`**，
+    报告还显示"未识别 0 列"——**完全看不出来**。
+
+    ⚠️ 旧测试只断言"这一列出现在**某个**别名集里"，**查不出撞名**，故漏掉了它。
+    """
+    mapping, unknown = _bm.resolve_columns(SPEC_5_3)
+    assert unknown == [], f"20 列里有未识别的：{unknown}"
+    assert len(mapping) == len(SPEC_5_3), \
+        f"只映射了 {len(mapping)}/{len(SPEC_5_3)} 列——有两列撞了同一规范名"
+    missing = [c for c in SPEC_5_3 if c not in mapping.values()]
+    assert not missing, f"这些列静默落空：{missing}"
+
+
+def test_poc_and_rpp_are_separate_canonicals():
+    """「批评点」与「待探讨的相关问题」是两个密码，必须各占一个规范名。"""
+    assert _bm.norm_header("批评点") in {_bm.norm_header(a) for a in _bm.FIELD_ALIASES["poc"]}
+    assert _bm.norm_header("待探讨的相关问题") in {_bm.norm_header(a) for a in _bm.FIELD_ALIASES["rpp"]}
+    mapping, _ = _bm.resolve_columns(["批评点", "待探讨的相关问题"])
+    assert mapping["poc"] == "批评点" and mapping["rpp"] == "待探讨的相关问题"
+
+
+def test_duplicate_canonical_is_reported_not_silently_dropped():
+    """★撞规范名时，后一列必须进 `unknown` —— 不许静默丢弃。
+
+    两个不同表头映射到同一规范名（如两份表的合并），若静默保留第一个，
+    用户会以为全部列都读到了。
+    """
+    mapping, unknown = _bm.resolve_columns(["作者", "author"])
+    assert len(mapping) == 1 and unknown == ["author"], \
+        f"重复规范名的列未报出：mapping={mapping} unknown={unknown}"
+
+
+def test_every_canonical_has_a_chinese_label():
+    """★规范名一律要有中文显示名，否则报告里出现 `rat` 这种英文缩写。
+
+    实测：覆盖率表曾把「理论依据」显示成 `rat`——我上一轮补了别名却漏了显示名。
+    """
+    missing = [c for c in _bm.FIELD_ALIASES if _bm.label(c) == c]
+    assert not missing, f"这些规范名没有中文显示名，会以英文缩写出现在报告里：{missing}"
+
+
+def test_skill_own_review_phrasing_fragments_are_stopped():
+    """★技能**自己教用户写**的评述用语，其短碎片不得进入聚类候选。
+
+    2026-10-09 用 11 行 RCOS 做 B 形态测试时，候选榜被
+    `无数据 5`／`具体前人文献 4`／`作者明示 3`／`无实证 2`／`但未给样本 2` 占据——
+    它们全是写「批评点／空白」栏时的评价用语，**不是文献的主题内容**。
+    它们不是任何已列完整句的子串，故必须显式停用（技能教的写法污染技能自己的聚类，
+    不能推给用户去 `--stopwords`）。
+    """
+    rows = [{"rof": "实践表明可提升素养", "spl": "", "cpl": "作者未对具体前人文献提出批评",
+             "gap": "无数据；无实证；但未给样本；作者明示空白"}] * 3
+    got = {w for w, _ in (B.cluster_hint(rows) or [])}
+    for frag in ("无数据", "无实证", "具体前人文献", "作者明示", "未给样本"):
+        assert frag not in got, f"评述用语碎片「{frag}」仍在聚类候选里：{sorted(got)}"
