@@ -179,6 +179,19 @@ def items(text: str, name: str):
     out = [_clean(x) for x in re.findall(r"(?m)^\s*(?:\d+[.、)]|[-*])\s*(.{8,300})", seg)]
     if len(out) >= 2:
         return out
+    # ★表格**单元格内连写**的编号（`| 批评点 | **1. … 2. … 3. …** |`）：没有换行，
+    #   行首锚点切不出多条。2026-10-09 重测踩到——读者把 5 条批评点压在一个单元格里，
+    #   本脚本只读出 1 条（这正是先前"先按行首编号"那一改的镜像缺口）。
+    parts = re.split(r"\*{0,2}(?=\d+[.、)])", seg)
+    cell = []
+    for q in parts:
+        q = _clean(re.sub(r"^[\d.、)\-*\s]+", "", q))
+        if len(q) >= 8:
+            cell.append(q)
+    if len(cell) > len(out):
+        out = cell
+    if len(out) >= 2:
+        return out
     # 表格**单元格内**常用 ①②③ 连写（没有换行），此时才按它们切
     parts = re.split(r"(?=[①②③④⑤⑥⑦⑧⑨⑩])", seg)
     out = []

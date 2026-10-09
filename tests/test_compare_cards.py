@@ -110,3 +110,24 @@ def test_main_passes_when_all_agree(tmp_path, capsys):
     a.write_text(body, encoding="utf-8")
     b.write_text(body, encoding="utf-8")
     assert cc.main([str(a), str(b)]) == 0
+
+
+def test_items_split_numbered_list_inside_a_table_cell():
+    """★表格**单元格内连写**的编号条目也要切出来。
+
+    实测（2026-10-09 重测）：读者把 5 条批评点压在一个单元格里
+    （`| 批评点 | **1. … 2. … 3. …** |`），没有换行，行首锚点切不出多条，
+    本脚本只读出 **1 条**——★这正是先前"先按行首编号"那一改的**镜像缺口**。
+    """
+    card = ("| 批评点 | **1. 核心构念无可操作性定义**：未给指标。 "
+            "**2. 时点局限（最硬一条）**：2018 年文而 2025 版指南尚未存在。 "
+            "**3. 论证跳跃**：以市场薪资推出中小学招不到教师。 |\n")
+    got = cc.items(card, "批评点")
+    assert len(got) == 3, f"单元格内连写只切出 {len(got)} 条：{got}"
+
+
+def test_items_still_split_multiline_lists():
+    """★改完之后，多行列表仍要照常切（别为了单元格把换行那条路径弄坏）。"""
+    card = ("### 批评点\n\n1. 第一条批评，给了依据。\n2. 第二条批评，给了依据。\n"
+            "3. 第三条批评，给了依据。\n4. 第四条批评，给了依据。\n")
+    assert len(cc.items(card, "批评点")) == 4
