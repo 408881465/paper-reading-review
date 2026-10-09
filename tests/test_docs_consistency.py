@@ -216,3 +216,32 @@ def test_scripts_do_not_invent_undocumented_states():
         f"脚本会写这些取值，但 STATE_VALUES 未登记（也就未被文档覆盖）：{extra}\n"
         f"→ 补文档 + 补本测试的 STATE_VALUES"
     )
+
+
+def test_criteria_do_not_leak_the_test_corpus():
+    """★★ 判准文档不得包含测试语料的答案或可识别特征。
+
+    2026-10-09 第三轮重测的事故：为消除第一轮的档位分歧，我在 batch-workflow §2.1
+    里把那次实测的文章特征与结论都写了进去（连「结论是哪一档」都写明），
+    而同一篇文章正是下一轮要测的对象——于是判准里写着答案，
+    「两人一致」变成了自己考自己。
+
+    这处污染是一位独立读者发现的（「我怀疑该表是按本文写就的，若如此，
+    T2 是否等于已知答案？」）——写判准的人自己不会发现，故立此守护。
+
+    规则：判准可以对「曾出现一处分歧」做抽象说明，但不得出现能指向具体测试文献的特征。
+    扩充方式：每有一个新测试语料，就把其特征词加进下面禁表（并抽象化文档）。
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    text = "".join(
+        p.read_text(encoding="utf-8")
+        for p in list((root / "references").glob("*.md")) + [root / "SKILL.md", root / "README.md"]
+    )
+    leaked = [k for k in ("意义—挑战—对策", "课标／师资／支持环境", "四条对策",
+                          "规范社会培训机构", "该目标是否适用于初中和小学")
+              if k in text]
+    assert not leaked, (
+        "判准文档里出现了测试语料的特征，等于泄露答案："
+        + str(leaked)
+        + " → 把它们抽象化（保留「为何加这条判据」的说明，去掉可识别特征与该篇的结论）"
+    )
