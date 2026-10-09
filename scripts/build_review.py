@@ -116,6 +116,10 @@ STOPWORDS = set(
     #   `但未给样本 2`，**全是本表写「批评点／空白」时的评价用语，不是文献的主题内容**。
     #   它们不是任何已列短语的子串，故必须显式列出（同本段开头的教训）。
     #   `无数据`／`无样本` 等是**对文献的评价**，拿去当主题会让提纲跑偏。
+    # ★同一族套话的**又一族变体**（2026-10-09 中英混排实测候选榜：`作者未对具体 7`／
+    #   `真实数据 5`／`既有研究 7`）。判据同前：**技能教用户这样写，就不能让它污染聚类**。
+    "作者未对具体 作者未点名 有真实数据 真实数据 无实证数据 有调查数据 "
+    "既有研究 既有文献 先前研究 前人工作 实务 指南 引用 型与 "
     "无数据 无实证 无样本 未给样本 但未给样本 未注明样本 无前后测 无统计 无测量 无量化 "
     "作者明示 作者未提出 作者未报告 作者未明示 作者期待 "
     "具体前人文献 具体文献 未与具体文献 未与具体文献对照 未对具体前人文献提出批评 "
@@ -129,6 +133,18 @@ STOPWORDS = set(
     "检验 探索 揭示 机制 作用 关系 差异 特征 维度 指标 标准 建议 "
     "因此 但是 而且 从而 进而 使得 导致 体现 反映 表明 显示 认为 强调 "
     "the and for that with this from are was were has have not but which "
+    # ★英文学术套话。2026-10-09 中英混排实测：内置表此前只有上面 12 个英文功能词，
+    #   于是 `gap`／`focus`／`still` 这类**英文套话**直接进了候选榜（gap 出现 4 次）。
+    #   ⚠️ **只停套话与功能词**，不停可能是真主题的名词：teacher／student／
+    #   collaboration／curriculum／co-teaching／stem／ai 等一律**保留**
+    #   （本主题里 teacher 出现 14 次，正是真主题）。
+    "gap gaps study studies research researches article articles paper papers review "
+    "however therefore furthermore moreover thus hence although though while whereas "
+    "finding findings conclusion conclusions implication implications result results "
+    "focus focuses still also more most such other others using used use based "
+    "et al between among within across during about into over under "
+    "present presents presented show shows showed shown suggest suggests suggested "
+    "provide provides provided require requires required include includes included "
     "they their its been also such these those using used study research "
     "paper article results method methods analysis data".split()
 )
@@ -240,6 +256,21 @@ def strip_boilerplate(text: str) -> str:
     return text.replace(_PARTICLE_BOUNDARY, _BOUNDARY)
 
 
+# ★引注剥离：**人名不是主题词**。
+#   2026-10-09 中英混排实测：候选榜出现 `fuchs 2`／`zorlu 2`——它们来自我在 RCOS 里
+#   写的「（Fuchs & Fuchs 1992 等）」「（Zorlu & Zorlu 2024）」。引注是**论据出处**，
+#   不是文献在谈什么；混进候选会把提纲带偏。
+_CITATION = re.compile(
+    r"[（(][^（()）\n]{0,80}?(?:19|20)\d{2}[a-z]?[^（()）\n]{0,30}?[）)]"      # 含 4 位年份的括注
+    r"|[A-Z][a-z]{2,}(?:\s*(?:&|and|、|，|,)\s*[A-Z][a-z]{2,})*\s+et\s+al\.?,?\s*(?:19|20)\d{2}"
+    r"|[A-Z][a-z]{2,}\s*(?:&|and)\s*[A-Z][a-z]{2,}\s*,?\s*(?:19|20)\d{2}")
+
+
+def strip_citations(text: str) -> str:
+    """剥掉引注（含年份的括注与 `Name et al. Year` 式），使**人名不进主题候选**。"""
+    return _CITATION.sub(" ", text or "")
+
+
 def tokenize(text: str, max_size: int = MAX_GRAM):
     """中文取 2–MAX_GRAM 字滑窗（无需分词库），英文取单词。
 
@@ -250,11 +281,12 @@ def tokenize(text: str, max_size: int = MAX_GRAM):
     生成长 gram 只用于判定「谁是碎片」，展示时仍只保留 ≤ DISPLAY_MAX 字的。
     """
     tokens = []
-    for word in re.findall(r"[a-zA-Z]{3,}", text.lower()):
+    cleaned = strip_citations(text)
+    for word in re.findall(r"[a-zA-Z]{3,}", cleaned.lower()):
         if word not in STOPWORDS:
             tokens.append(word)
 
-    for run in re.findall(r"[\u4e00-\u9fff]{2,}", strip_boilerplate(text)):
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", strip_boilerplate(cleaned)):
         for size in range(2, min(max_size, len(run)) + 1):
             for i in range(len(run) - size + 1):
                 gram = run[i:i + size]

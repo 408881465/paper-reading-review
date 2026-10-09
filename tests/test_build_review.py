@@ -447,3 +447,57 @@ def test_skill_own_review_phrasing_fragments_are_stopped():
     got = {w for w, _ in (B.cluster_hint(rows) or [])}
     for frag in ("无数据", "无实证", "具体前人文献", "作者明示", "未给样本"):
         assert frag not in got, f"评述用语碎片「{frag}」仍在聚类候选里：{sorted(got)}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 中英混排：引注人名与英文套话不得进主题候选
+# 2026-10-09 用一份 8 行（英文 6 + 中文 2）的 RCOS 做形态 B 多语言测试时查出。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_citations_are_stripped_before_tokenizing():
+    """★引注里的人名不是主题词。
+
+    实测首跑候选榜出现 `fuchs 2`／`zorlu 2`——来自 RCOS 里写的
+    「（Fuchs & Fuchs 1992 等）」「（Zorlu & Zorlu 2024）」。引注是**论据出处**，
+    不是"文献在谈什么"；混进候选会把综述提纲带偏。
+    """
+    text = ("有：引用 1960s 以来 co-teaching 的历史（Trump 1966；Warwick 1971）"
+            "与问题讨论（Fuchs & Fuchs 1992 等）。既有研究（Zorlu & Zorlu 2024）也如此。"
+            "Wang et al. 2020 给出三要素。")
+    cleaned = _bm.strip_citations(text)
+    for name in ("Trump", "Warwick", "Fuchs", "Zorlu", "Wang"):
+        assert name not in cleaned, f"人名 {name} 未被剥掉：{cleaned!r}"
+    assert "co-teaching" in cleaned, "剥离过度：正文内容也被删了"
+
+
+def test_english_boilerplate_is_stopped_but_topic_nouns_kept():
+    """★英文**套话**要停，但可能是真主题的**名词**必须保留。
+
+    实测：内置表此前只有 12 个英文功能词（the/and/for…），于是 `gap`／`focus`／`still`
+    直接进了候选榜（gap 出现 4 次）。
+    ★但同一次实测里 `teacher` 出现 **14 次、正是本主题最高频的真主题词**，
+    故 teacher／student／collaboration／curriculum／stem 一律**不能停**。
+    """
+    boiler = {"gap", "gaps", "however", "still", "focus", "findings", "studies", "et"}
+    for w in boiler:
+        assert w in _bm.STOPWORDS, f"英文套话「{w}」未被停用"
+    keep = {"teacher", "teachers", "student", "collaboration", "curriculum", "stem", "ai"}
+    for w in keep:
+        assert w not in _bm.STOPWORDS, f"可能是真主题的名词「{w}」被误停"
+
+
+def test_mixed_language_clustering_surfaces_real_theme():
+    """★中英混排时，候选榜应浮现**真主题**而不是噪声。
+
+    用一小段中英混排语料：真主题是"教师协同"，噪声是引注人名与英文套话。
+    """
+    rows = [{
+        "rof": "有真实数据：两位教师协同设计并授课（Kim & Kwon 2025）。Findings 表明……"
+               "然而 however the study still has a gap。",
+        "spl": "有：梳理既有研究（Fuchs & Fuchs 1992 等）。",
+        "cpl": "作者未对具体前人研究提出批评。",
+        "gap": "作者明示：leaving a gap in the integration。",
+    }] * 3
+    got = {w for w, _ in (_bm.cluster_hint(rows) or [])}
+    for noise in ("fuchs", "kim", "kwon", "however", "still", "gap", "findings"):
+        assert noise not in got, f"噪声「{noise}」仍在候选里：{sorted(got)}"
