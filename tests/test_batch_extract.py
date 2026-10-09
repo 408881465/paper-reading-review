@@ -627,3 +627,75 @@ def test_malformed_file_does_not_abort_the_whole_batch(tmp_path):
     for name in ("b_fake.pdf", "c_good.pdf", "d_zero.pdf", "e_enc.pdf"):
         assert rows[name]["解码状态"] == "打不开", f"{name} 状态应为打不开"
     assert "RuntimeError" in rows["c_good.pdf"]["备注"], "隔离时未把异常类型写进备注"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 三条队列的「已抽的跳过」必须一致
+# 2026-10-09 四轮增量演练查出：.docx 与 .md/.txt 两条队列没有这个判据。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_docx_and_text_queues_skip_already_extracted(tmp_path):
+    """★重跑不得重抽 .docx / .md / .txt，更**不得覆盖**已抽出的文本。
+
+    实测（修复前）：重跑时报「成功 3」，而那 3 篇（1 个 .docx + 2 个 .md）
+    一篇新的都没有——两条队列**没有**「已抽的跳过」判据，每次重跑都重抽一遍。
+    ★危害不在浪费：重抽会 `open(out, "w")` **覆盖已抽文本**——
+    **若用户手工修正过 OCR 错字，重跑会静默覆盖掉**。
+    """
+    import csv as _csv
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("# 手记\n\n正文内容。\n", encoding="utf-8")
+    (src / "b.txt").write_text("纯文本正文。\n", encoding="utf-8")
+    import zipfile
+    docx = src / "c.docx"
+    with zipfile.ZipFile(docx, "w") as z:
+        z.writestr("word/document.xml",
+                   '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+                   'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>正文</w:t></w:r></w:p>'
+                   '</w:body></w:document>')
+
+    reg = str(tmp_path / "reg.csv")
+    out = tmp_path / "out"
+    assert sc.main(["init", reg]) == 0
+    assert sc.main(["scan", reg, "--source", str(src)]) in (0, 3)
+    assert be.main(["--registry", reg, "--outdir", str(out)]) == 0
+
+    made = sorted(out.glob("*.txt"))
+    assert len(made) == 3, f"首次未抽出三份：{made}"
+    # 记下内容与 mtime，模拟"用户手工修正过"
+    stamp = {p: (p.stat().st_mtime_ns, p.read_text(encoding="utf-8")) for p in made}
+    # ★手工修正其中一份
+    fixed = made[0]
+    fixed.write_text(fixed.read_text(encoding="utf-8") + "\n（用户手工补的一行）\n", encoding="utf-8")
+    edited = fixed.read_text(encoding="utf-8")
+
+    # 重跑：不应重抽、更不应覆盖
+    assert be.main(["--registry", reg, "--outdir", str(out)]) == 0
+    assert fixed.read_text(encoding="utf-8") == edited, \
+        "重跑覆盖了用户手工修正过的文本！"
+
+    rows = {r["文件名"]: r for r in _csv.DictReader(open(reg, encoding="utf-8-sig"))}
+    for name in ("a.md", "b.txt", "c.docx"):
+        assert rows[name]["解码状态"] == "已抽文本"
+
+
+def test_rerun_message_reports_actual_workload(tmp_path, capsys):
+    """★重跑的提示要报**真实工作量**（过滤后的篇数），不能报过滤前的。
+
+    实测踩过：msg 在队列过滤**之前**构造，于是显示「另有 1 篇 .docx……另有 2 篇
+    .md/.txt 直接读入」，而实际一篇都不会处理；跳过的篇数也没出现。
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.md").write_text("# x\n\n正文。\n", encoding="utf-8")
+    reg = str(tmp_path / "reg.csv")
+    out = tmp_path / "out"
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+    be.main(["--registry", reg, "--outdir", str(out)])
+    capsys.readouterr()
+    be.main(["--registry", reg, "--outdir", str(out)])
+    out_text = capsys.readouterr().out
+    assert "略过" in out_text, f"重跑未报出跳过的篇数：{out_text!r}"
+    assert ".md/.txt 直接读入" not in out_text, "重跑仍报过滤前的工作量"

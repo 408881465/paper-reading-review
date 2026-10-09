@@ -97,6 +97,25 @@ def find_text_duplicates(rows):
     return pairs
 
 
+def _should_skip_extracted(row, args) -> bool:
+    """该行**已有文本且不该重抽**——PDF／.docx／纯文本三条队列共用同一判据。
+
+    ★2026-10-09 四轮增量演练查出：`.docx` 与 `.md/.txt` 两条队列**没有**这个判据，
+    每次重跑都重抽一遍，报告里还写"成功 3"（其实一篇新的都没有）。
+    重抽会 `open(out, "w")` **覆盖已抽出的文本**——**若用户手工修正过 OCR 错字，
+    重跑会静默覆盖掉**。与"抽取覆盖去重决定"是同一族问题：
+    **重跑破坏由别处维护的状态。**
+
+    放行条件（与 PDF 队列一致）：
+      · `解码状态 == 已OCR` 且给了 `--redo-ocr`（该参数**单独使用即生效**，不受 --force 影响）
+      · 或用户显式给了 `--force`
+    """
+    if row.get("解码状态") == "已OCR":
+        return not args.redo_ocr
+    have = row.get("文本路径", "")
+    return bool(have) and os.path.exists(have) and not args.force
+
+
 def _load_extractor():
     """加载同目录的 extract_pdf_text，复用它已打磨好的清洗逻辑。
 
@@ -467,6 +486,14 @@ def main(argv=None) -> int:
     if args.limit:
         todo = todo[:args.limit]
 
+    results = {"ok": 0, "需OCR": 0, "打不开": 0}
+    # ★在构造 msg **之前**就把「已有文本」的行滤掉：否则 msg 报的是**过滤前**的篇数，
+    #   显示"另有 1 篇 .docx……另有 2 篇 .md/.txt"而实际一篇都不会处理——
+    #   报出来的工作量不真实（2026-10-09 四轮增量演练踩到）。
+    _docx_raw, _text_raw = todo_docx, todo_text
+    todo_docx = [r for r in todo_docx if not _should_skip_extracted(r, args)]
+    todo_text = [r for r in todo_text if not _should_skip_extracted(r, args)]
+    already_skipped = (len(_docx_raw) - len(todo_docx)) + (len(_text_raw) - len(todo_text))
     msg = f"待抽文本 {len(todo)} 篇（已抽的跳过）"
     if todo_docx:
         msg += f"；另有 {len(todo_docx)} 篇 .docx 走章节名回指（无页码标记）"
@@ -474,6 +501,8 @@ def main(argv=None) -> int:
         msg += f"；另有 {len(todo_text)} 篇 .md/.txt 直接读入"
     if dup_skipped:
         msg += f"；另有 {dup_skipped} 篇已判为重复，按登记表的去重决定跳过"
+    if already_skipped:
+        msg += f"；另有 {already_skipped} 篇 .docx/.md/.txt 已有文本，按「已抽的跳过」略过（要重抽加 --force）"
     print(msg)
     if args.dry_run:
         for row in todo:
@@ -484,7 +513,6 @@ def main(argv=None) -> int:
             print(f"  · {row['编号']}  {row['文件名']}   [纯文本]")
         return 0
 
-    results = {"ok": 0, "需OCR": 0, "打不开": 0}
     notes = []
     for row in todo:
         out = os.path.join(args.outdir,
