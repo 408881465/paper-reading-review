@@ -442,15 +442,17 @@ def test_force_init_warns_before_destroying_id_bindings(tmp_path, capsys):
     sc.main(["init", reg])
     sc.main(["scan", reg, "--source", str(src)])
 
+    # ★2026-10-09 起：重建**会保留编号**（sidecar 复用），故提示改为说明这一点，
+    #   而不再是"将销毁绑定"。本条只断言"覆盖非空表时有提示"，
+    #   具体措辞由 test_force_init_announces_ids_are_preserved 负责。
     capsys.readouterr()
     assert sc.main(["init", reg, "--force"]) == 0
-    err = capsys.readouterr().err
-    assert "编号" in err and "增量" in err, f"覆盖非空表未给出编号绑定警告：{err!r}"
+    assert capsys.readouterr().err.strip(), "覆盖非空表时应有提示"
 
-    # 空表（或无表）时不吵
+    # 空表时不吵
     capsys.readouterr()
     sc.main(["init", reg, "--force"])
-    assert "销毁全部" not in capsys.readouterr().err
+    assert "重建非空" not in capsys.readouterr().err
 
 
 def test_incremental_scan_keeps_existing_ids_stable(tmp_path):
@@ -477,3 +479,109 @@ def test_incremental_scan_keeps_existing_ids_stable(tmp_path):
     for name, rid in before.items():
         assert after[name] == rid, f"增量同步改变了既有编号：{name} {rid} → {after[name]}"
     assert "a.pdf" in after and after["a.pdf"] not in before.values(), "新文件未获得新编号"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 编号稳定性：**新增文献不得改变原有编号**（用户明确要求）
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ids(reg):
+    return {r["文件名"]: r["编号"] for r in _read(reg)}
+
+
+def test_new_file_sorting_first_does_not_shift_existing_ids(tmp_path):
+    """★插入一个**排序在最前**的新文件，既有编号不得后移。
+
+    这是错位最容易发生的形态：编号按"路径排序后依次编号"派生，
+    插入排序在前的文件会让后续编号**整体后移一位**。
+    """
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    for n in ("m1", "m2", "m3"):
+        _write(src / f"{n}.pdf", f"内容-{n}")
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+    before = _ids(reg)
+    assert before == {"m1.pdf": "L0001", "m2.pdf": "L0002", "m3.pdf": "L0003"}
+
+    _write(src / "a0.pdf", "内容-a0")          # 排序在 m1 之前
+    sc.main(["scan", reg, "--source", str(src)])
+    after = _ids(reg)
+    for name, rid in before.items():
+        assert after[name] == rid, f"既有编号被改变：{name} {rid} → {after[name]}"
+    assert after["a0.pdf"] == "L0004", "新文件未获得新编号"
+
+
+def test_rebuild_also_preserves_existing_ids(tmp_path):
+    """★**重建**（init --force + scan）同样不得改变既有编号。
+
+    修复前：三个文件为 L0001/L0002/L0003，加入排序在前的文件后重建 →
+    `L0001=新文件 / L0002=原L0001 / …` 全部后移，而产出文件名、RCOS、
+    解码卡里到处嵌着编号 → **全部指向别的文献且不报错**。
+    修复后：`init --force` 写 sidecar，`scan` 复用旧编号。
+    """
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    for n in ("m1", "m2", "m3"):
+        _write(src / f"{n}.pdf", f"内容-{n}")
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+    before = _ids(reg)
+
+    _write(src / "a0.pdf", "内容-a0")            # 排序最前
+    sc.main(["init", reg, "--force"])
+    sc.main(["scan", reg, "--source", str(src)])
+    after = _ids(reg)
+    for name, rid in before.items():
+        assert after[name] == rid, f"重建改变了既有编号：{name} {rid} → {after[name]}"
+    assert after["a0.pdf"] == "L0004"
+
+    # 再来一轮，确认可重复
+    _write(src / "m15.pdf", "内容-m15")          # 排序中间
+    sc.main(["init", reg, "--force"])
+    sc.main(["scan", reg, "--source", str(src)])
+    final = _ids(reg)
+    for name, rid in before.items():
+        assert final[name] == rid
+    assert final["a0.pdf"] == "L0004" and final["m15.pdf"] == "L0005"
+
+
+def test_registry_is_sorted_by_id_after_scan(tmp_path):
+    """★保存前按编号排序（表格的规范形态）。
+
+    ⚠️ 必须用**重建**场景才测得到：增量时既有行已按编号在表里，新行 append 在后面，
+    扫描顺序恰好等于编号顺序（排序成了空操作）。只有**重建**（空表起步）时，
+    排序在前的文件会先被扫描却被分到**大**编号，行序才会与编号序不一致。
+    """
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    for n in ("m1", "m2", "m3"):
+        _write(src / f"{n}.pdf", f"内容-{n}")
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+
+    _write(src / "a0.pdf", "内容-a0")        # 排序在 m1 之前、却应得 L0004
+    sc.main(["init", reg, "--force"])        # ← 空表重建，扫描顺序 = [a0, m1, m2, m3]
+    sc.main(["scan", reg, "--source", str(src)])
+
+    rows = _read(reg)
+    assert [r["编号"] for r in rows] == ["L0001", "L0002", "L0003", "L0004"], \
+        f"未按编号排序：{[(r['编号'], r['文件名']) for r in rows]}"
+    assert rows[3]["文件名"] == "a0.pdf", "a0 应是 L0004 且排在最后"
+
+
+def test_force_init_announces_ids_are_preserved(tmp_path, capsys):
+    """重建时的提示必须说清"编号会被保留"，而不是含糊其辞。"""
+    reg = str(tmp_path / "reg.csv")
+    src = tmp_path / "src"
+    src.mkdir()
+    _write(src / "甲.pdf", "内容-甲")
+    sc.main(["init", reg])
+    sc.main(["scan", reg, "--source", str(src)])
+    capsys.readouterr()
+    sc.main(["init", reg, "--force"])
+    err = capsys.readouterr().err
+    assert "编号会被保留" in err, f"重建提示未说明保号：{err!r}"

@@ -354,6 +354,90 @@ def _sync_fingerprint_at_load(key: str):
     return _LOADED_FP.get(key)
 
 
+def _registry_sort_key(row):
+    """按编号数值排序；非 `Lxxxx` 形态的编号排在最后（保持稳定）。"""
+    m = re.fullmatch(r"L(\d+)", row.get("编号", "") or "")
+    return (0, int(m.group(1))) if m else (1, 0)
+
+
+def _idmap_path(registry: str) -> str:
+    """编号映射 sidecar 的路径。
+
+    为什么要它：`编号` 是**扫描顺序派生**的，而技能纪律说它是**身份字段**
+    （§3「行一旦写入就不再删改身份字段」），产出文件名、RCOS 行、解码卡里到处嵌着它。
+    2026-10-09 实测：三个文件登记为 L0001/L0002/L0003，加入一个**排序在前**的新文件后
+    重建登记表 → 编号**整体后移一位**，于是所有按旧编号写的产出**指向别的文献**。
+    用户明确要求"**后续增加新文件不要改变原有文献编号**"。
+    → 重建时把旧映射存为 sidecar，`scan` 复用它，**使重建也保号**。
+    """
+    return registry + ".idmap.csv"
+
+
+def _load_idmap(registry: str):
+    """→ (按文件名索引的旧编号, 按 sha1 索引的旧编号)。无 sidecar 时两者皆空。"""
+    by_name, by_sha = {}, {}
+    path = _idmap_path(registry)
+    if not os.path.exists(path):
+        return by_name, by_sha
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            for row in csv.DictReader(fh):
+                name, sha, rid = row.get("文件名", ""), row.get("sha1", ""), row.get("编号", "")
+                if not rid:
+                    continue
+                if name:
+                    by_name.setdefault(name, rid)
+                if sha:
+                    by_sha.setdefault(sha, rid)
+    except OSError:
+        pass
+    return by_name, by_sha
+
+
+def _save_idmap(registry: str, rows: list) -> None:
+    """把当前的「编号 ←→ 文件」映射写成 sidecar，供下一次重建复用。"""
+    path = _idmap_path(registry)
+    try:
+        with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+            w = csv.DictWriter(fh, fieldnames=["编号", "文件名", "sha1"])
+            w.writeheader()
+            for r in rows:
+                if r.get("编号"):
+                    w.writerow({"编号": r["编号"], "文件名": r.get("文件名", ""),
+                                "sha1": r.get("sha1", "")})
+    except OSError as exc:
+        print(f"（编号映射写入失败，不影响本次结果：{exc}）", file=sys.stderr)
+
+
+def _inherit_id(name: str, sha: str, by_name, by_sha, used) -> str:
+    """为新扫描到的文件挑编号：**优先复用旧编号**，否则返回空串（由调用方分配新的）。
+
+    先按**文件名**匹配（最具体），再按 sha1 兜底——同一 sha1 可能对应多行（去重行），
+    故文件名是更可靠的键。
+    """
+    for candidate in (by_name.get(name), by_sha.get(sha)):
+        if candidate and candidate not in used:
+            return candidate
+    return ""
+
+
+def _assign_id(name: str, sha: str, used: set, by_name, by_sha, idx: int):
+    """→ (编号, 新的 idx)。
+
+    **优先复用旧编号**（`_inherit_id`）；只有拿不到旧编号时才分配新的。
+    分配前跳过 `used` 里已占用的号，避免与既有行或本轮已分配的号相撞。
+    """
+    inherited = _inherit_id(name, sha, by_name, by_sha, used)
+    if inherited:
+        used.add(inherited)
+        return inherited, idx
+    while f"L{idx:04d}" in used:
+        idx += 1
+    rid = f"L{idx:04d}"
+    used.add(rid)
+    return rid, idx + 1
+
+
 def _next_index(rows: list, prefix: str = "L") -> int:
     top = 0
     for row in rows:
@@ -376,6 +460,14 @@ def cmd_init(args) -> int:
         print(f"已存在，未覆盖：{path}（要重建请加 --force）", file=sys.stderr)
         return 1
     if os.path.exists(path) and args.force:
+        # ★销毁前**先把旧映射存下来**，使重建后 `scan` 能复用旧编号
+        #   （用户要求："后续增加新文件，不要改变原有文献编号"）。
+        try:
+            _old_fields, _old_rows = load_registry(path)
+            if _old_rows:
+                _save_idmap(path, _old_rows)
+        except Exception:                                   # noqa: BLE001
+            pass
         # ★覆盖**非空**登记表会销毁「编号 ↔ 文件」的绑定，必须警告。
         #   为什么严重：编号是**扫描顺序派生**的（`L{序号:04d}`），而技能纪律说它是
         #   **身份字段**（§3「行一旦写入就不再删改身份字段」），产出文件名、RCOS 表、
@@ -387,13 +479,13 @@ def cmd_init(args) -> int:
         except Exception:                                   # noqa: BLE001
             old_rows = []
         if old_rows:
-            print(f"⚠️  即将覆盖非空登记表（{len(old_rows)} 行）：{path}", file=sys.stderr)
-            print("    ★这会**销毁全部「编号 ↔ 文件」绑定**：编号由扫描顺序派生，"
-                  "语料里增删文件会使后续编号整体位移，", file=sys.stderr)
-            print("      按旧编号命名的产出（如 `T1-L0030-…md`）、RCOS 行、解码卡都会指错文献。",
+            print(f"ℹ️  重建非空登记表（{len(old_rows)} 行）：{path}", file=sys.stderr)
+            print("    原有文献的**编号会被保留**——已把「编号 ↔ 文件」映射写入 "
+                  f"{os.path.basename(_idmap_path(path))}，", file=sys.stderr)
+            print("    随后 `scan` 会按文件名（其次 sha1）复用旧编号，新文件才拿新号。",
                   file=sys.stderr)
-            print("    → 新增文献请改用**增量** `scan`（旧行编号保持不变，新行追加编号）；"
-                  "确要重建请先备份并按新表逐处更新引用。", file=sys.stderr)
+            print("    ⚠️ 仅当**语料里的文件已改名或删除**时，旧映射才会失配、"
+                  "该文件可能获得新编号。", file=sys.stderr)
     save_registry(path, REGISTRY_FIELDS, [])
     print(f"已建空登记表：{path}（{len(REGISTRY_FIELDS)} 栏）")
     return 0
@@ -433,6 +525,9 @@ def cmd_scan(args) -> int:
         print("没有找到可处理的文件（检查 --source 与 --ext）", file=sys.stderr)
         return 1
 
+    # ★编号继承：新文件**优先复用旧编号**（见 _idmap_path 处说明）
+    id_by_name, id_by_sha = _load_idmap(args.registry)
+    used_ids = {r.get("编号") for r in rows if r.get("编号")}
     by_sha = {}
     by_title = {}
     by_path = set()
@@ -446,6 +541,14 @@ def cmd_scan(args) -> int:
 
     added, skipped_dup, flagged = [], 0, []
     idx = _next_index(rows)
+    # ★新号必须从**继承号的最大值之上**开始：扫描按路径排序，新文件可能排在
+    #   既有文件**之前**先被处理，此时若 idx 从 1 起，它会抢走别人该继承的号
+    #   （2026-10-09 实测踩过：m1/m2/m3 已登记为 L0001-L0003，新增排序在前的
+    #    a0.pdf 后重建——a0 先处理、拿到 L0001，三个老文件的继承全部落空）。
+    if id_by_name or id_by_sha:
+        idx = max(idx, _next_index([{"编号": v} for v in
+                                    list(id_by_name.values()) + list(id_by_sha.values())]))
+
     for path in targets:
         # 已在表里的**同一路径**直接跳过。不能只看 sha1：开了
         # --record-duplicates 时，重复文件会每扫一次多出一行「重复记录」，
@@ -458,8 +561,9 @@ def cmd_scan(args) -> int:
             skipped_dup += 1
             if args.record_duplicates:
                 dup = {f: "" for f in REGISTRY_FIELDS}
+                _rid, idx = _assign_id(name, digest, used_ids, id_by_name, id_by_sha, idx)
                 dup.update({
-                    "编号": f"L{idx:04d}", "文件名": name,
+                    "编号": _rid, "文件名": name,
                     "标题": parse_author_title(name)[0],
                     "第一作者": parse_author_title(name)[1],
                     "来源类型": guess_source_type(name), "sha1": digest,
@@ -469,13 +573,13 @@ def cmd_scan(args) -> int:
                 })
                 rows.append(dup)
                 added.append(dup)
-                idx += 1
             continue
 
         title, author = parse_author_title(name)
+        rid, idx = _assign_id(name, digest, used_ids, id_by_name, id_by_sha, idx)
         row = {f: "" for f in REGISTRY_FIELDS}
         row.update({
-            "编号": f"L{idx:04d}", "文件名": name, "标题": title,
+            "编号": rid, "文件名": name, "标题": title,
             "第一作者": author, "来源类型": guess_source_type(name),
             "sha1": digest, "源路径": path,
         })
@@ -495,10 +599,17 @@ def cmd_scan(args) -> int:
         added.append(row)
         by_sha[digest] = row
         by_title.setdefault(norm, row)
-        idx += 1
+        # ★这里不再 `idx += 1`：`_assign_id` 分配新号时已把 idx 推到下一个。
 
     if added and not args.dry_run:
+        # ★保存前按编号排序：编号继承之后，新文件的行可能插在中间（甚至在表头下第一行），
+        #   使表格看起来杂乱、也不便于人工核对。排序后表格是**规范形态**，
+        #   与 `merge_registry_rows` 的做法一致（它保存前也按编号排序）。
+        rows.sort(key=_registry_sort_key)
         save_registry(args.registry, fields, rows)
+        # ★把「编号 ↔ 文件」映射刷新到 sidecar，供下一次重建复用
+        #   （用户要求："后续增加新文件，不要改变原有文献编号"）。
+        _save_idmap(args.registry, rows)
 
     print(f"扫描来源 {len(targets)} 个文件｜新增 {len(added)} 条"
           f"（其中同名不同内容 {len(flagged)} 条）｜内容重复跳过 {skipped_dup} 条")
