@@ -462,3 +462,168 @@ def test_split_digit_page_footer_disables_labeling():
     # 对照：正常两位数页脚（未被拆）应能推出偏移
     normal = [f"正文内容若干\n{i + 31}" for i in range(4)]
     assert be.detect_printed_offset(normal) == 30
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 坏件隔离：加密 / 损坏 / 截断 / 零字节 / 伪装扩展名
+# 2026-10-09 用 9 个自造的坏 PDF 测出——此前"打不开"分支只测过"文件不存在"。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _make_good_pdf(path, pages=3):
+    import fitz
+    d = fitz.open()
+    for i in range(pages):
+        p = d.new_page()
+        p.insert_text((72, 100), f"Page {i+1} body text.",
+                      fontname="china-s" if False else "helv")
+    d.save(str(path))
+    d.close()
+    return path
+
+
+def _extract(path, out):
+    return be.extract_one(str(path), str(out), be._load_extractor())
+
+
+def test_encrypted_pdf_is_reported_unopenable_not_crashing(tmp_path):
+    """★用户口令加密的 PDF 必须判「打不开」，**不得抛异常**。
+
+    `fitz.open()` 对加密件**不报错**（打开"成功"），要等到取页才抛
+    `ValueError: document closed or encrypted`。实测：这曾让 `batch_extract`
+    **整批中断**——后续文件全没处理、登记表没落盘、已抽文本成孤儿。
+    `needs_pass` 是独立状态，必须单独判。
+    """
+    import fitz
+    good = _make_good_pdf(tmp_path / "g.pdf")
+    enc = tmp_path / "enc.pdf"
+    d = fitz.open(str(good))
+    d.save(str(enc), encryption=fitz.PDF_ENCRYPT_AES_256,
+           user_pw="secret", owner_pw="owner")
+    d.close()
+
+    status, pages, chars, msg = _extract(enc, tmp_path / "o.txt")
+    assert status == "打不开"
+    assert "加密" in msg and "口令" in msg
+    assert not (tmp_path / "o.txt").exists(), "打不开的件不应留下空壳文本"
+
+
+def test_damaged_pdf_without_text_is_not_mistaken_for_scanned(tmp_path):
+    """★「结构损坏」与「真·无文本层」都取不到文本，但处置相反——必须分开判。
+
+    实测（2026-10-09）：一份**截断到 40%** 的 PDF 被 MuPDF 容错打开（3 页、0 文本），
+    于是被判成「需OCR」→ **用户会去 OCR 一个坏文件而白费功夫**，真正原因是文件损坏。
+    判据用 `is_repaired`：真图片型 False／损坏 True。
+
+    ★构造必须让文件**能打开、页数正常、但零文本**，才走得到该判据：
+    截断件常直接 `FileDataError`（走另一分支，测不到这里）。
+    所以用「**空白页 PDF + 坏 magic**」——实测 is_repaired=True 且文本 0。
+    """
+    import fitz
+    blank = tmp_path / "b.pdf"
+    d = fitz.open()
+    for _ in range(2):
+        d.new_page()
+    d.save(str(blank))
+    d.close()
+    damaged = tmp_path / "damaged.pdf"
+    raw = blank.read_bytes()
+    damaged.write_bytes(b"XXXX" + raw[4:])
+
+    # 前置确认：这份样本确实走 is_repaired 分支（否则测试会静默退化成空断言）
+    d = fitz.open(str(damaged))
+    assert d.is_repaired is True, "样本未触发 is_repaired，测试失去意义"
+    assert sum(len(d[i].get_text().strip()) for i in range(d.page_count)) == 0
+    d.close()
+
+    status, pages, chars, msg = _extract(damaged, tmp_path / "o.txt")
+    assert status == "打不开", f"损坏件被判成 {status}（绝不能是需OCR）"
+    assert "损坏" in msg and "OCR" in msg, f"消息应说明原因并劝阻按图片型去 OCR：{msg!r}"
+
+    # ★对照：结构完好的空白件**必须**仍判「需OCR」，别把判据改死
+    good_blank = _extract(blank, tmp_path / "o2.txt")
+    assert good_blank[0] == "需OCR", "结构完好的无文本层件被误判"
+
+
+def test_genuinely_scanned_pdf_still_goes_to_ocr(tmp_path):
+    """★真·图片型 PDF（无文本层、结构完好）仍须判「需OCR」——别把判据改死。"""
+    import fitz
+    blank = tmp_path / "blank.pdf"
+    d = fitz.open()
+    for _ in range(2):
+        d.new_page()
+    d.save(str(blank))
+    d.close()
+    status, pages, chars, msg = _extract(blank, tmp_path / "o.txt")
+    assert status == "需OCR" and "无文本层" in msg
+
+
+def test_repaired_but_readable_pdf_is_ok_with_a_warning(tmp_path):
+    """★头部损坏但仍能读出文本 → 判 ok，**但必须警告文本可能不完整**。
+
+    实测：`badheader.pdf`（magic 被改坏）判 ok 并抽出 108 字，
+    但文件结构已损坏——不警告的话，读者会把残缺文本当成全文。
+    """
+    good = _make_good_pdf(tmp_path / "g.pdf")
+    raw = good.read_bytes()
+    bad = tmp_path / "badheader.pdf"
+    bad.write_bytes(b"XXXX" + raw[4:])
+    status, pages, chars, msg = _extract(bad, tmp_path / "o.txt")
+    assert status == "ok" and chars > 0
+    assert "损坏" in msg and "不完整" in msg, f"未警告文本可能不完整：{msg!r}"
+
+
+def test_malformed_file_does_not_abort_the_whole_batch(tmp_path):
+    """★★ 最要紧的一条：**一个坏件不得中断整批，且已处理结果必须落盘**。
+
+    实测（修复前）：加密 PDF 抛 ValueError → 后续文件全没处理、
+    登记表**完全没保存**（9 行全是「未处理」，而已抽出的 2 份文本成了孤儿）。
+    """
+    import csv
+    src = tmp_path / "src"
+    src.mkdir()
+    _make_good_pdf(src / "a_good.pdf")
+    (src / "b_fake.pdf").write_text("这不是 PDF，只是改了扩展名。", encoding="utf-8")
+    _make_good_pdf(src / "c_good.pdf")
+    (src / "d_zero.pdf").write_bytes(b"")
+    import fitz
+    d = fitz.open(str(src / "a_good.pdf"))
+    d.save(str(src / "e_enc.pdf"), encryption=fitz.PDF_ENCRYPT_AES_256,
+           user_pw="x", owner_pw="y")
+    d.close()
+    _make_good_pdf(src / "f_good.pdf")
+
+    reg = str(tmp_path / "reg.csv")
+    assert sc.main(["init", reg]) == 0
+    # ★`scan` 的退出码：**有新增返回 3**，无新增返回 0（见 cmd_scan 末尾）。
+    assert sc.main(["scan", reg, "--source", str(src)]) in (0, 3)
+    # ★再叠一层：让 `extract_one` 对**其中一个文件**抛出**未预料**的异常
+    #   （前面的坏件都能被 extract_one 优雅处理，测不到"隔离"本身）。
+    real_extract = be.extract_one
+
+    def boom(path, out, extractor, with_printed_labels=False):
+        if "c_good" in os.path.basename(path):
+            raise RuntimeError("模拟未预料异常")
+        return real_extract(path, out, extractor,
+                            with_printed_labels=with_printed_labels)
+
+    be.extract_one = boom
+    try:
+        rc = be.main(["--registry", reg, "--outdir", str(tmp_path / "out")])
+    finally:
+        be.extract_one = real_extract
+    assert rc == 0, "坏件不应让整批以非零码结束"
+
+    rows = {r["文件名"]: r for r in csv.DictReader(open(reg, encoding="utf-8-sig"))}
+    assert len(rows) == 6
+    # ★关键：**所有行都被处理过**，不是停在「未处理」
+    assert all(r["解码状态"] != "未处理" for r in rows.values()), \
+        f"有行停在未处理（说明中断了）：{[(k, v['解码状态']) for k, v in rows.items()]}"
+    # 完好的两份抽出来了——★其中 f_good 排在抛异常的那份**之后**，
+    #   它被处理到，正说明异常没有中断整批。
+    for name in ("a_good.pdf", "f_good.pdf"):
+        assert rows[name]["解码状态"] == "已抽文本", f"{name} 未被抽取"
+        assert rows[name]["文本路径"], f"{name} 缺文本路径"
+    # 抛未预料异常的那份（打桩所致）与三个坏件，都判打不开
+    for name in ("b_fake.pdf", "c_good.pdf", "d_zero.pdf", "e_enc.pdf"):
+        assert rows[name]["解码状态"] == "打不开", f"{name} 状态应为打不开"
+    assert "RuntimeError" in rows["c_good.pdf"]["备注"], "隔离时未把异常类型写进备注"

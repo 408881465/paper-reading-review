@@ -235,6 +235,9 @@ def detect_printed_offset(pages_raw, extractor=None):
     return offset
 
 
+_MUPDF_SILENCED = False
+
+
 def extract_one(pdf_path: str, out_path: str, extractor, with_printed_labels: bool = False):
     """抽一篇 → (状态, 页数, 字符数, 提示消息)。
 
@@ -252,14 +255,45 @@ def extract_one(pdf_path: str, out_path: str, extractor, with_printed_labels: bo
         except ImportError:
             return "缺少依赖", 0, 0, "需要 PyMuPDF：pip install pymupdf"
 
+    # ★静音 MuPDF 的解析错误回显（模块级只设一次）。实测（2026-10-09）：一份
+    #   **中段被填零**的 PDF 让 MuPDF 往 stderr 刷 **100+ 行**
+    #   `MuPDF error: format error: object out of range…`，把「哪些成功、哪些打不开」
+    #   的真正输出整个淹没——实测汇总行几乎看不见。错误仍由本脚本归纳成
+    #   一行「打不开」消息，不需要 MuPDF 逐条回显。
+    global _MUPDF_SILENCED
+    if not _MUPDF_SILENCED:
+        try:
+            fitz.TOOLS.mupdf_display_errors(False)
+        except Exception:                                       # noqa: BLE001
+            pass
+        _MUPDF_SILENCED = True
+
     try:
         doc = fitz.open(pdf_path)
     except Exception as exc:
         return "打不开", 0, 0, f"无法打开 PDF：{exc}"
 
+    # ★加密件必须在**遍历页之前**拦住：`fitz.open()` 对用户口令加密的 PDF
+    #   **不会报错**（打开"成功"），要等到取页时才抛
+    #   `ValueError: document closed or encrypted`。
+    #   2026-10-09 实测：一份 `user_pw` 加密的 PDF 让 `batch_extract` **整批中断**，
+    #   后续 5 个文件根本没处理，且**登记表没落盘**（已抽出的 2 份文本成了孤儿）。
+    #   `needs_pass` 是独立状态，不是异常——必须单独判。
+    if doc.needs_pass:
+        doc.close()
+        return "打不开", 0, 0, ("PDF 已加密，需要口令才能打开"
+                            "（本技能不破解口令；请用有权口令另存为无加密副本后重跑）")
+
     try:
         total = doc.page_count
         pages_raw = [doc[i].get_text() for i in range(total)]
+        # ★必须在 `doc.close()` **之前**读：`is_repaired` 是文档级属性。
+        #   它区分「文件损坏/被截断」与「真·无文本层的图片型 PDF」——
+        #   两者文本量都是 0，处置却相反：前者报「打不开」，后者才去 OCR。
+        #   实测（2026-10-09）：截断到 40% 的 PDF 被容错打开（3 页、0 文本），
+        #   曾被判成「需OCR」→ **用户会去 OCR 一个坏文件而白费功夫**。
+        #   判据对比：blank.pdf（真图片型）=False；truncated.pdf（截断）=True。
+        repaired = bool(getattr(doc, "is_repaired", False))
     finally:
         doc.close()
 
@@ -282,16 +316,33 @@ def extract_one(pdf_path: str, out_path: str, extractor, with_printed_labels: bo
 
     content = "".join(chunks)
     chars = len(re.sub(r"\s", "", content))
+    # ★文件被 MuPDF **修复过**（`is_repaired`）说明源文件结构已损坏/被截断。
+    #   实测（2026-10-09）：一份**截断到 40%** 的 PDF 被容错打开（3 页、0 文本），
+    #   于是被判成「需OCR」——**用户会去 OCR 一个坏文件而白费功夫**，真正原因是文件截断。
+    #   判据对比：blank.pdf（真图片型）is_repaired=False；truncated.pdf is_repaired=True。
+    # ⚠️ 判据用 `empty_pages`，**不能**用 `not chunks`——`chunks` 里永远有
+    #    `===== PAGE n =====` 页标记，恒非空（我第一版就写错在这里，实测没拦住）。
+    if repaired and len(empty_pages) == total:
+        return ("打不开", total, 0,
+                "文件结构损坏（MuPDF 需修复才能打开）且取不到任何文本；"
+                "请重新获取完整文件——**不要按图片型去 OCR**")
+    repair_note = ("文件结构损坏，经 MuPDF 修复后才打开，文本可能不完整"
+                   if repaired else "")
+
     scanned = bool(empty_pages) and len(empty_pages) >= max(1, 0.5 * total)
 
     if scanned:
         # 不写文件：写了空壳，下游极易把「没抽到」读成「原文没写」
-        return "需OCR", total, chars, f"{len(empty_pages)}/{total} 页无文本层，需先 OCR"
+        _m = f"{len(empty_pages)}/{total} 页无文本层，需先 OCR"
+        return "需OCR", total, chars, (_m + "；" + repair_note if repair_note else _m)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(content)
-    return "ok", total, chars, ""
+    # ★"能读出文本"不等于"文件完好"：被 MuPDF 修复过的件（如头部损坏的 PDF）
+    #   文本**可能不完整**，必须在备注里说明，否则读者会把残缺文本当成全文
+    #   （实测：badheader.pdf 判 ok 并抽出 108 字，但文件结构已损坏）。
+    return "ok", total, chars, repair_note
 
 
 def main(argv=None) -> int:
@@ -438,8 +489,15 @@ def main(argv=None) -> int:
     for row in todo:
         out = os.path.join(args.outdir,
                            f"{row['编号']}_{safe_filename(row.get('标题') or row['文件名'])}.txt")
-        status, pages, chars, msg = extract_one(row["源路径"], out, extractor,
-                                                with_printed_labels=args.printed_labels)
+        # ★逐文件**异常隔离**：一个坏件不得中断整批。
+        #   2026-10-09 实测：加密 PDF 抛 ValueError → 后续文件全没处理、
+        #   登记表没落盘、已抽文本成孤儿。任何未预料的异常都记「打不开」并继续。
+        try:
+            status, pages, chars, msg = extract_one(row["源路径"], out, extractor,
+                                                    with_printed_labels=args.printed_labels)
+        except Exception as exc:                                    # noqa: BLE001
+            status, pages, chars = "打不开", 0, 0
+            msg = f"抽取时异常（{type(exc).__name__}）：{exc}"
         results[status] = results.get(status, 0) + 1
         row["页数"] = str(pages) if pages else row.get("页数", "")
         row["字符数"] = str(chars) if chars else row.get("字符数", "")
@@ -468,7 +526,7 @@ def main(argv=None) -> int:
             try:
                 with open(row["源路径"], encoding="utf-8", errors="replace") as fh:
                     content = fh.read()
-            except OSError as exc:
+            except Exception as exc:                                # noqa: BLE001
                 row["解码状态"] = "打不开"
                 row["文本路径"] = ""
                 row["备注"] = (row.get("备注", "") + "；读取失败：" + str(exc)).strip("；")
@@ -498,9 +556,13 @@ def main(argv=None) -> int:
             out = os.path.join(
                 args.outdir,
                 f"{row['编号']}_{safe_filename(row.get('标题') or row['文件名'])}.txt")
-            status, pages, chars, msg = extract_one_docx(
-                row["源路径"], out, docx_extractor,
-                with_para_numbers=args.printed_labels)
+            try:
+                status, pages, chars, msg = extract_one_docx(
+                    row["源路径"], out, docx_extractor,
+                    with_para_numbers=args.printed_labels)
+            except Exception as exc:                                # noqa: BLE001
+                status, pages, chars = "打不开", 0, 0
+                msg = f"抽取时异常（{type(exc).__name__}）：{exc}"
             results[status] = results.get(status, 0) + 1
             # .docx 无固定页码：`页数` 栏保持原值（不写 0，避免被读成"0 页"）
             row["页数"] = row.get("页数", "")
