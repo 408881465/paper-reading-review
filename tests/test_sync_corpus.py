@@ -585,3 +585,29 @@ def test_force_init_announces_ids_are_preserved(tmp_path, capsys):
     sc.main(["init", reg, "--force"])
     err = capsys.readouterr().err
     assert "编号会被保留" in err, f"重建提示未说明保号：{err!r}"
+
+
+def test_status_catches_tier_written_with_a_space(tmp_path, capsys):
+    """★档位写「T1 核心」（带空格）的行，也必须被 `status` 抓为待办。
+
+    实测（2026-10-09 机械审计）：`status` 里做的是
+    `tier in ("T1核心", "T2重要", "专著章节")` **精确匹配**，
+    而**文档表格里写的是「T1 核心」（带空格）**——
+    ★**照文档写的那行会被静默漏检**，于是"定档了却一直没出解码卡"
+    这个最容易发生的静默停滞又回来了（实测：两行里带空格那行没报）。
+    """
+    assert sc.norm_tier("T1 核心") == "T1核心"
+    assert sc.norm_tier("T2　重要") == "T2重要"      # 全角空格
+    assert sc.norm_tier("T3背景") == "T3背景"
+
+    reg = tmp_path / "reg.csv"
+    reg.write_text(
+        "编号,文件名,标题,第一作者,年份,来源类型,页数,字符数,文本路径,sha1,源路径,"
+        "主题分类,档位,纳入判定,相关度,解码状态,产出文件,备注\n"
+        "L001,a.pdf,a,甲,2025,期刊论文,3,100,,x,/tmp/a.pdf,,T1 核心,纳入（核心）,5,已抽文本,,\n"
+        "L002,b.pdf,b,乙,2025,期刊论文,3,100,,y,/tmp/b.pdf,,T2重要,纳入（核心）,5,已抽文本,,\n",
+        encoding="utf-8")
+    sc.main(["status", str(reg)])
+    out = capsys.readouterr().out
+    assert "L001" in out, "带空格的档位行被漏检了（静默停滞回归）"
+    assert "L002" in out

@@ -354,6 +354,18 @@ def _sync_fingerprint_at_load(key: str):
     return _LOADED_FP.get(key)
 
 
+def norm_tier(value: str) -> str:
+    """归一化档位取值，供**精确匹配**用。
+
+    ★2026-10-09 机械审计查出：`status` 里做的是 `tier in ("T1核心", "T2重要", "专著章节")`
+    精确匹配，而**文档表格里写的是「T1 核心」（带空格）**——
+    ★**照文档写「T1 核心」的行会被静默漏检**，于是"定档了却一直没出解码卡"这个
+    最容易发生的静默停滞又回来了（实测复现：两行里带空格那行没报）。
+    故先把空格（含全角空格）去掉再比。**未来凡是按档位取值做精确匹配的地方，一律走这里。**
+    """
+    return re.sub(r"[\s\u3000]", "", value or "")
+
+
 def _registry_sort_key(row):
     """按编号数值排序；非 `Lxxxx` 形态的编号排在最后（保持稳定）。"""
     m = re.fullmatch(r"L(\d+)", row.get("编号", "") or "")
@@ -726,7 +738,8 @@ def cmd_status(args) -> int:
         #   2026-10-08 实测：15 篇 T1/T2 全部停在「已抽文本」，而 status 报「待办／异常 0 条」。
         #   这是最容易发生的静默停滞——流程看起来在跑，其实一步没动。
         DONE = ("已解码", "已入RCOS", "已入综述")
-        if tier in ("T1核心", "T2重要", "专著章节") and status not in DONE:
+        # ★用 norm_tier 归一化：文档写「T1 核心」、表里写「T1核心」都要认
+        if norm_tier(tier) in ("T1核心", "T2重要", "专著章节") and status not in DONE:
             problems.append(f"{row['编号']} 已定档 {tier} 但尚未解码"
                             f"（状态={status or '未处理'}）：{row['文件名']}")
         if status == "已解码" and not out:

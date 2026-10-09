@@ -158,3 +158,61 @@ def test_scanned_threshold_has_single_source():
         "batch_extract 未复用 extract_pdf_text.SCANNED_PAGE_MIN_CHARS"
     assert "SCANNED_PAGE_MIN_CHARS = 10" in _read("scripts/extract_pdf_text.py"), \
         "extract_pdf_text 的公开阈值常量不见了"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 登记表取值：**代码会写的，文档必须定义**
+# 2026-10-09 机械审计查出（本会话占比最高的一类缺陷："文档写了要求、工具没实现"
+# 的镜像——"工具写了取值、文档没定义"）。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# 脚本会写进登记表的取值。★新增取值时必须同步补文档与这张表。
+STATE_VALUES = [
+    # 档位
+    "待分流", "T1核心", "T2重要", "T3背景", "专著章节", "政策文件", "去重-重复",
+    # 解码状态
+    "未处理", "已抽文本", "需OCR", "待其它提取器", "待核查", "跳过", "已OCR",
+    "已解码", "已入RCOS", "已入综述", "打不开", "源文件缺失", "已分流",
+]
+
+
+def test_every_registry_state_the_scripts_write_is_documented():
+    """★代码会写进登记表的取值，文档必须都定义——否则用户看到值却查不到含义。
+
+    实测（2026-10-09 机械审计）：`待分流`（档位初值）、`未处理`（解码状态初值）、
+    `源文件缺失`（异常态）三者**代码会写、文档各出现 0 次**。
+    ★其中 `源文件缺失` 最要紧：它是异常态，用户看到它需要知道怎么办。
+    （对照本文件里"文档引用的路径必须存在"那条——管的是引用，管不到取值。）
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    text = "".join(
+        p.read_text(encoding="utf-8")
+        for p in list((root / "references").glob("*.md"))
+        + [root / "SKILL.md", root / "README.md"]
+    )
+    missing = [v for v in STATE_VALUES if v not in text]
+    assert not missing, (
+        f"这些取值脚本会写、文档却没定义：{missing}\n"
+        f"→ 补进 references/batch-workflow.md 的状态取值表（§3.2）"
+    )
+
+
+def test_scripts_do_not_invent_undocumented_states():
+    """★反向：脚本里新写的状态值，必须在 STATE_VALUES 里（即已被文档覆盖）。
+
+    这条防止"悄悄加一个状态"——先在本测试登记、再补文档，两步都做完才算数。
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = "".join((root / "scripts" / n).read_text(encoding="utf-8")
+                  for n in ("sync_corpus.py", "batch_extract.py"))
+    known = set(STATE_VALUES)
+    found = set(re.findall(r'"([\u4e00-\u9fff]{2,10})"', src))
+    # 只看像状态值的：出现在 解码状态 / 档位 赋值右侧的
+    assigned = set()
+    for m in re.finditer(r'\["(?:解码状态|档位)"\]\s*=\s*"([^"]+)"', src):
+        assigned.add(m.group(1))
+    extra = sorted(assigned - known)
+    assert not extra, (
+        f"脚本会写这些取值，但 STATE_VALUES 未登记（也就未被文档覆盖）：{extra}\n"
+        f"→ 补文档 + 补本测试的 STATE_VALUES"
+    )
