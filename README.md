@@ -95,6 +95,26 @@ python3 scripts/sync_corpus.py attach 文献登记表.csv L0007 --text /tmp/ocr.
 聚类提示只是词频参考，可用 `--stopwords` / `--keep` 增删词表。
 
 `lint_review.py` 的退出码：`0` 无 error、`1` 有 error（`--strict` 时 warning 也算）。
+
+### 协作层：多人独立解码后的口径一致性比对
+
+**判准清不清楚，只有让两个互不通气的人读同一篇才能测出来。** 分歧不是谁错，
+**它是判准文档的缺陷线索**：
+
+```bash
+# 甲、乙各自独立产出一份同一篇的解码卡（禁止互相查看）
+python3 scripts/compare_cards.py 甲-解码卡.md 乙-解码卡.md
+python3 scripts/compare_cards.py *.md --json      # 机器可读
+```
+
+**退出码**：`0` = 无硬分歧；`1` = 有硬分歧（档位／密码有无／回指基准）；`2` = 用法或读文件错误。
+硬分歧可用于流水线；**批评点措辞不同属软分歧**，只报告不判失败。
+
+★出分歧后的处置：回到 `references/batch-workflow.md` 与 `reading-codes.md`，
+把该处判准补成**可操作的反例或优先级**，再重测一次。**不要靠"多沟通"解决。**
+
+★条目重合用二元字组相似度**只作提示**（换措辞说同一件事时分数会偏低），
+工具会把最高相似的对与分数列出来供人工判断——**判定分歧以内容为准，不以分数为准**。
 规则可用 `--skip <名>` 关掉，`--help` 列全部规则名。
 
 ## 目录结构
@@ -122,7 +142,8 @@ paper-reading-review/
 │   ├── sync_corpus.py        # 形态 D：判重、增量同步、登记表状态
 │   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
 │   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单、产物卫生
-│   └── build_review.py       # RCOS 校验 + 主题聚类提示
+│   ├── build_review.py       # RCOS 校验 + 主题聚类提示
+│   └── compare_cards.py      # 协作层：多人独立解码的口径一致性比对
 └── tests/                    # pytest：脚本行为与 SKILL.md 纪律的回归网
 ```
 

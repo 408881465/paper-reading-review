@@ -278,7 +278,8 @@ paper-reading-review/
 │   ├── sync_corpus.py        # 形态 D：判重、增量同步、登记表状态
 │   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
 │   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单、产物卫生
-│   └── build_review.py       # RCOS 校验 + 主题聚类提示
+│   ├── build_review.py       # RCOS 校验 + 主题聚类提示
+│   └── compare_cards.py      # 协作层：多人独立解码的口径一致性比对
 └── tests/                    # pytest：脚本行为与 SKILL.md 纪律的回归网
 ```
 
