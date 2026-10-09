@@ -233,6 +233,13 @@ def ref_basis(text: str):
     m = re.search(r"PAGE\s*(\d+)[^\n]{0,12}p\.?\s*(\d+)", text)
     if m:
         return f"K={int(m.group(2)) - int(m.group(1)):+d}"
+    # ★「各页页脚裸数字依次为 70/71/72」这类写法：信息完整、可复算，只是没写 K。
+    #   2026-10-09 第三轮重测踩到——按"必须写 K"更利于机器读，但**脚本不该因此判它缺失**。
+    m = re.search(r"裸数字[^\n]{0,20}?((?:\d{1,4}[／/、,\s]+){1,}\d{1,4})", text)
+    if m:
+        nums = [int(x) for x in re.findall(r"\d{1,4}", m.group(1))]
+        if len(nums) >= 2 and nums[-1] - nums[0] == len(nums) - 1:
+            return f"K={nums[0] - 1:+d}"      # PAGE 1 ↔ 首个裸数字 → K = first - 1
     if re.search(r"章节名", text):
         return "章节名"
     return "?"
