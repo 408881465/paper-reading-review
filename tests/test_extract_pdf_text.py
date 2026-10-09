@@ -92,3 +92,38 @@ def test_western_page_footer_is_deliberately_not_accepted():
     """
     assert E.page_number_value("Page 12 of 17") is None
     assert E.page_number_value("Page 12") is None
+
+
+def test_page_number_accepts_period_from_ocr():
+    """★OCR 会把页码两侧的装饰点读成 `.`。
+
+    实测：原文页脚 `· 16 ·`，OCR 输出 `·16.`／`·17.`／`18.`／`·19.`／`·25.`。
+    修复前这些**认不出**，11 页里 5 页落空；`detect_printed_offset` 要求命中
+    ≥ 半数页，取前 5 页时只有 1 页能认 → **偏移推不出、回指基准整个丢失**。
+    """
+    for s, want in [("·16.", 16), ("·17.", 17), ("18.", 18), ("·19.", 19),
+                    ("·25.", 25), ("16.", 16), (".16", 16), ("16。", 16), ("16．", 16)]:
+        assert E.page_number_value(s) == want, f"{s!r} 未认出页码"
+
+
+def test_page_number_still_rejects_multi_dot_numerics():
+    """★加句点**不得**让多点数字被误认为页码。
+
+    `_PAGE_LINE` 是 fullmatch 且**只允许一个数字组**，所以 `3.14`／`2020.12`／
+    `1.2.3` 这类仍不匹配——这是"加句点"能成立的前提，必须锁住。
+    """
+    for s in ["3.14", "2020.12", "1.2.3", "v1.2.3", "10.0.1"]:
+        assert E.page_number_value(s) is None, f"{s!r} 被误认为页码"
+
+
+def test_offset_detected_from_few_pages_after_period_fix():
+    """★小批量也必须能推出偏移（修复前前 5 页推不出）。
+
+    构造 5 页，页脚分别是 `·16.`／`·17.`／`18.`／`·19.`／`·20·`（含 OCR 常见形态），
+    真值偏移 15。
+    """
+    pages = [f"正文第 {i} 页的内容。\n\n·{15 + i}." if i != 3 else
+             f"正文第 {i} 页的内容。\n\n18." for i in range(1, 6)]
+    pages[4] = "正文第 5 页的内容。\n\n·20·"
+    import batch_extract as be
+    assert be.detect_printed_offset(pages) == 15
