@@ -601,3 +601,39 @@ def test_duplicate_column_is_surfaced_by_check(tmp_path):
     _, _, problems, warnings = B.check(str(path))
     assert any("现有文献研究空白" in w for w in warnings + problems), \
         f"重复位列没有出现在任何提示里：warnings={warnings} problems={problems}"
+
+
+# ------------------------------------------------------------ 覆盖率表的「承诺 / 交付」对
+
+def test_wtdd_column_is_shown_in_the_coverage_table(tmp_path, capsys):
+    """★「作者实际做了什么」必须印在覆盖率表里——它是「作者要做什么」的**对端**。
+
+    实测踩过：2026-10-10 列集由 20 列扩为 21 列、补入「作者要做什么」，
+    `RECOMMENDED` 同步加了 `wtd`，**却漏了 `wtdd`**——于是覆盖率表里
+    「承诺」有、「交付」没有：技能最强调的「承诺 vs 交付」对齐度，
+    在工具输出里只剩一半；用户整列漏填「作者实际做了什么」也得不到任何提示
+    （它既不进覆盖率表，又不在 `REQUIRED` 里）。
+    """
+    path = _write_header_csv(
+        tmp_path / "full21.csv", SPEC_5_3,
+        [["1", "甲", "2020", "题", "刊"] + ["内容"] * (len(SPEC_5_3) - 5)])
+    B.check(str(path))
+    out = capsys.readouterr().out
+    assert "密码栏覆盖率:" in out
+    # ★断言**只看覆盖率表那一段**：`check` 在此之前会印一行「识别到的列: …」，
+    #   它把全部已映射的表头都列过一遍——拿整份 out 去断言，未修代码也会
+    #   **因错误理由通过**（本测试首版就这么假绿过一次）。
+    table = out.split("密码栏覆盖率:", 1)[1]
+    assert "作者要做什么" in table, "覆盖率表漏印了「作者要做什么」（承诺端）"
+    assert "作者实际做了什么" in table, "覆盖率表漏印了「作者实际做了什么」（交付端）"
+
+
+def test_wtdd_is_recommended_not_required_and_keeps_spec_order():
+    """★登记口径：`wtdd` 入**建议栏**（存量 RCOS 不该因缺它而报错），
+    且按 §5.3 列序排在 `wtd` 之后——两栏在覆盖率表里读起来才是相邻的一对。
+    """
+    assert "wtdd" in _bm.RECOMMENDED, "「作者实际做了什么」不在建议栏，覆盖率表永远不会显示它"
+    assert "wtdd" not in _bm.REQUIRED, "它是建议栏——判成必需会让存量 RCOS 全部报「缺少必需栏」"
+    rec = list(_bm.RECOMMENDED)
+    assert rec.index("wtdd") > rec.index("wtd"), f"§5.3 列序被破坏：{rec}"
+    assert _bm.label("wtdd") == "作者实际做了什么"
