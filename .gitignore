@@ -18,4 +18,5 @@ dist/
 
 # 测试与工具缓存
 .pytest_cache/
+.pytest_tmp/
 .ruff_cache/

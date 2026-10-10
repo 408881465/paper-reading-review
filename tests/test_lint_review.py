@@ -32,6 +32,19 @@ def test_parenthesised_abbreviation_is_allowed():
     assert not any("纯缩写残留" in e for e in res["errors"])
 
 
+def test_ideographic_bracket_abbreviation_is_allowed():
+    """★中文名**自身含（）**时，缩写括注按规范改用〔〕，同样不得判为裸缩写。
+
+    2026-10-10 改名的直接后果：`研究结果（作者发现了什么）〔ROF〕` 是**规范写法**，
+    但括注判定若只认 `（）`，向左扫到的是 `〔`，会一路扫到行首 → 判成裸缩写，
+    **照规范写反而被罚**（与 2026-10-08 那批 ERROR 同类）。
+    """
+    text = ("# 研究结果（作者发现了什么）〔ROF〕\n\n"
+            "理论依据（研究的必要性）〔RAT〕见上。\n")
+    res = lr.lint_text("x.md", text, form="B", min_chars=0, max_chars=10 ** 9)
+    assert not any("纯缩写残留" in e for e in res["errors"]), res["errors"]
+
+
 def test_table_abbreviation_warns_but_does_not_block():
     text = "# 表\n\n| 项 | 含义 |\n|---|---|\n| ROF | 研究结果 |\n"
     res = lr.lint_text("x.md", text, form="B", min_chars=0, max_chars=10 ** 9)
@@ -115,7 +128,7 @@ def test_guess_form_by_filename():
 def test_merged_question_answer_warns():
     text = "# 综述\n\n张三（2020）研究了校本课程并发现协同有效。\n"
     res = lr.lint_text("x.md", text, form="B", min_chars=0, max_chars=10 ** 9)
-    assert any("提问与作答必须分开" in w for w in res["warnings"])
+    assert any("承诺与交付必须分开" in w for w in res["warnings"])
 
 
 def test_cli_exit_codes(tmp_path, capsys):
@@ -299,7 +312,7 @@ def test_bare_abbreviation_in_prose_still_caught():
 def test_html_comment_is_not_content():
     """★注释不是正文。模板通篇是 `<!-- 填写说明 -->`，把注释当内容校验，
     等于拿"给填写者的指引"去判"成稿是否合规"。"""
-    text = "# x\n\n<!-- 说明：WTD = 作者提出的主要问题；禁止「方法有待加强」 -->\n\n正文。\n"
+    text = "# x\n\n<!-- 说明：WTD = 作者要做什么；禁止「方法有待加强」 -->\n\n正文。\n"
     res = lr.lint_text("x.md", text, form="A", min_chars=0, max_chars=10 ** 9)
     assert not [e for e in res["errors"] if "纯缩写" in e]
     assert not [e for e in res["errors"] if "禁用表述" in e]
@@ -321,7 +334,7 @@ def test_gap_rationale_accepts_skill_sanctioned_phrasing():
     """★「空白必配理论依据」里的依据，技能认可的写法有两种：
     直呼「理论依据」，或写成「因此可开展的研究是……」（SKILL.md 第 3 步原话）。
     只认前者会把**按模板写好的稿子**判成违规。"""
-    t = ("# 四、文献的批评与空白（现有文献批评 / 空白）\n\n"
+    t = ("# 四、文献的批评与空白（作者对现有文献的批评 / 空白）\n\n"
          "### 4.2 系统性研究空白\n\n#### 空白 1：x\n\n"
          "- 提出该空白的文献：甲\n- **因此可开展的研究是**：补做 y\n")
     res = lr.lint_text("x.md", t, form="B", min_chars=0, max_chars=10 ** 9)
@@ -403,7 +416,7 @@ def test_same_content_same_verdict_regardless_of_filename():
 
 # ---------------------------------------------------------------- 一页卡的内容识别
 # 2026-10-09 用形态 D 端到端跑批时查出：产出命名是自由的，按 `T2-L0110-作者-主题.md`
-# 这样命名很自然，文件名不含"解码卡"；而卡正文含「作者提出的主要问题」，
+# 这样命名很自然，文件名不含"解码卡"；而卡正文含「作者要做什么」，
 # 于是落到结构兜底被判成 A —— 一页卡被套上详版的 1500 字下限，
 # 三张卡（1017／1129／1392 字）全部报"低于下限"。
 
@@ -414,7 +427,7 @@ def test_card_detected_from_content_when_filename_is_free_form():
     """
     body = ("# 单篇解码卡\n\n## 0. 题录\n\n| 项目 | 内容 |\n|---|---|\n"
             "| 编号 | L0110 |\n\n## 1. 结构性密码\n\n"
-            "| 密码 | 内容 |\n|---|---|\n| 作者提出的主要问题 | x |\n\n"
+            "| 密码 | 内容 |\n|---|---|\n| 作者要做什么 | x |\n\n"
             "## 2. 策略性密码\n\n## 3. 与本课题的接口\n")
     # 文件名不含"解码卡"
     assert lr.guess_form("T2-L0110-杨鹏-计算思维模型.md", body) == "card"
@@ -426,7 +439,7 @@ def test_card_detected_from_content_when_filename_is_free_form():
 def test_full_review_not_mistaken_for_card():
     """详版模板用中文数字小节，不得被内容兜底误判成 card。"""
     body = ("# 单篇深度导读\n\n## 一、导读摘要\n\n## 二、结构性密码\n\n"
-            "| 密码 | 内容 |\n|---|---|\n| 作者提出的主要问题 | x |\n\n"
+            "| 密码 | 内容 |\n|---|---|\n| 作者要做什么 | x |\n\n"
             "## 三、策略性密码\n\n## 四、本文评述的判断\n")
     assert lr.guess_form("T1-L0030-作者-主题.md", body) == "A"
 
@@ -447,7 +460,7 @@ def test_other_forms_not_mistaken_for_report():
     """B/C/A 不得被报告特征误判。"""
     b = "# 主题综述：x\n\n## 一、综述摘要\n\n## 三、现有文献的主题格局\n"
     assert lr.guess_form("跨学科协同研究.md", b) == "B"
-    a = "# 单篇深度导读：x\n\n## 一、引用信息\n\n## 二、结构性密码\n\n| 作者提出的主要问题 | y |\n"
+    a = "# 单篇深度导读：x\n\n## 一、引用信息\n\n## 二、结构性密码\n\n| 作者要做什么 | y |\n"
     assert lr.guess_form("某篇研究.md", a) == "A"
 
 
@@ -544,7 +557,7 @@ def test_form_a_requires_all_fourteen_codes_including_strategy_codes():
     """★A 形态必须齐备**全部 14 个**密码（10 结构 + 4 策略）。
 
     旧实现写的是 `CODE_NAMES[:10]`——只查前 10 个，于是详版可以完全不给
-    「批评点／明显的遗漏点／待探讨的相关问题／能否理顺」而 lint 报 OK。
+    「批评点／明显的遗漏点／待探讨的相关问题／逻辑能否走通（能否自圆其说）」而 lint 报 OK。
     这 4 个策略密码恰是技能的核心卖点（`reading-codes.md`：「读出作者**没**写什么」），
     `review-workflow.md` 自检清单也要求「十个结构性密码与四个策略性密码已逐项覆盖」，
     A 模板本身就有对应小节。

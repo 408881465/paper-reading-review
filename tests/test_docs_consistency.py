@@ -337,3 +337,136 @@ def test_no_duplicated_fragment_line():
         "以下位置出现「上一行尾段的重复残句」（该删掉这一行）：\n"
         + "\n".join(bad)
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 阅读密码名：**规范名只有一份，且标签位必须用规范名**
+# 2026-10-10 改名事故：WTD/SPL/… 的中文名由「空白／理论依据／研究结果」等
+# 改为「现有文献研究空白／理论依据（研究的必要性）／研究结果（作者发现了什么）」，
+# 涉及 17 个文件、230+ 处。改名的难点不是替换，而是**改完各处不一致**——
+# 文档写一个名、脚本按另一个名匹配，用户照文档填就被校验器判成缺栏。
+# 故立两条守护：① 14 个规范名在文档／脚本／CSV 表头三处逐字一致；
+# ② 旧名不得再单独占一个表格单元格。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+CANONICAL_CODES = [
+    "作者要做什么", "现有文献综述", "作者对现有文献的批评", "现有文献研究空白",
+    "理论依据（研究的必要性）", "研究结果（作者发现了什么）",
+    "与现有文献观点一致的研究发现", "与现有文献观点相反的研究发现",
+    "作者实际做了什么", "作者对未来研究的建议",
+    "批评点", "明显的遗漏点", "待探讨的相关问题", "逻辑能否走通（能否自圆其说）",
+]
+
+LEGACY_CODE_LABELS = {
+    "空白": "现有文献研究空白",
+    "理论依据": "理论依据（研究的必要性）",
+    "研究结果": "研究结果（作者发现了什么）",
+}
+
+# ★RCOS 的 20 列**本来就不含「作者要做什么」**（只有「作者实际做了什么」）。
+#   这是列集设计的既有事实，不是本次改名的漏改——按事实登记，别让一致性测试
+#   去逼一个不存在的列。但一旦有人补上该列，上面的断言会失败并要求四处同步。
+RCOS_ABSENT = {"作者要做什么"}
+
+
+def test_canonical_code_names_are_identical_everywhere():
+    """★★ 14 个规范名必须在**文档、脚本、CSV 表头**三处逐字一致。
+
+    事故形态：`reading-codes.md`（唯一真源）改了名，而 `lint_review.py` 的
+    `CODE_NAMES` 没改 → 用户按文档写「现有文献研究空白」，校验器却找不到这一栏，
+    报「缺密码栏」。文档与工具互相打架，且两边各自的测试都全过。
+    """
+    import compare_cards as cc
+
+    import lint_review as lr
+
+    assert cc.CODE_NAMES == CANONICAL_CODES, (
+        f"compare_cards.CODE_NAMES 与规范名不符：{cc.CODE_NAMES}")
+    assert lr.CODE_NAMES == CANONICAL_CODES, (
+        f"lint_review.CODE_NAMES 与规范名不符：{lr.CODE_NAMES}")
+
+    for rel in ("references/reading-codes.md", "SKILL.md"):
+        text = _read(rel)
+        missing = [n for n in CANONICAL_CODES if n not in text]
+        assert not missing, f"{rel} 缺这些规范名（改名未同步）：{missing}"
+
+    header = _read("assets/rcos-template.csv").splitlines()[0]
+    missing = [n for n in CANONICAL_CODES if n not in header and n not in RCOS_ABSENT]
+    assert not missing, f"assets/rcos-template.csv 表头缺这些规范名：{missing}"
+    assert not any(n in header for n in RCOS_ABSENT), (
+        f"RCOS 表头出现了 {sorted(RCOS_ABSENT)}——若是有意补列，"
+        "请同步 batch-workflow §5.3、build_review.cmd_init、tests/test_build_review.SPEC_5_3，"
+        "并删掉本测试里的 RCOS_ABSENT")
+
+
+def test_no_legacy_code_name_in_table_cells():
+    """★旧密码名不得再单独占一个表格单元格（标签位）。
+
+    改名真正难的地方不在替换，而在**区分两类出现**：
+
+    - **标签位**（表格列／表头）：只能是规范名，旧名一律算漏改；
+    - **行文**（「每个空白后都要配理论依据」「荧光笔只标研究结果和空白」）：
+      旧名在这里是普通中文词，改了反而别扭，故**有意保留**。
+
+    本测试只管网标签位：单元格**恰好等于**旧名即判错。
+
+    合法例外的判据：**同一行别处已给出规范名**——那说明这一格是在
+    **指代论文的章节**（reading-codes.md §3「分部分速查」的第一列是「论文章节」，
+    那里写的是论文自己的「研究结果」一节），不是在贴密码标签。
+    """
+    bad = []
+    for d in STRUCTURAL_DOCS:
+        for i, line in enumerate(_read(d).split("\n"), 1):
+            if not _is_row(line):
+                continue
+            if any(canon in line for canon in LEGACY_CODE_LABELS.values()):
+                continue
+            for cell in (c.strip() for c in line.strip().strip("|").split("|")):
+                if cell in LEGACY_CODE_LABELS:
+                    bad.append(f"{d}:{i}  「{cell}」应写「{LEGACY_CODE_LABELS[cell]}」")
+    assert not bad, (
+        "以下表格单元格仍用旧密码名（标签位必须逐字用规范名）：\n" + "\n".join(bad)
+    )
+
+
+TEXT_FILES = DOCS + TEMPLATES + [
+    f"scripts/{p.name}" for p in sorted((ROOT / "scripts").glob("*.py"))
+]
+
+
+def _doubling_hits(text: str):
+    """找出「某个规范名被**自己的前缀或后缀**顶在头上/缀在尾上」的形态。
+
+    改名是**全局替换**，最典型的残留就是这么产生的：替换的旧名恰好是**新名的
+    一段前缀**，于是替换后新名被拼接成「前缀 + 新名」。真实事故：
+
+        与现有文献观点与现有文献观点一致的研究发现     ← 前缀「与现有文献观点」被顶在头上
+        逻辑上逻辑能否走通（能否自圆其说）（WIL）        ← 同类
+
+    这种残留**能通过所有子串检查**（新名确实在里面），只能靠"自己粘自己"这个形态识别。
+    """
+    hits = []
+    for name in CANONICAL_CODES:
+        for k in range(4, len(name)):
+            for form, tag in ((name[:k] + name, "前缀重复"), (name + name[-k:], "后缀重复")):
+                if form in text:
+                    hits.append((name, tag, form))
+    return hits
+
+
+def test_no_canonical_name_doubling_artifact():
+    """★规范名不得被自己的前缀/后缀粘住（全局改名的典型残留）。
+
+    背景：2026-10-10 改名覆盖 17 个文件、230+ 处，手改与脚本替换混用，
+    事后在 reading-codes.md 里查出三处「与现有文献观点与现有文献观点一致的研究发现」——
+    **所有既有测试当时都是绿的**（子串检查查不出"自己粘自己"）。
+    这条网就是替那次人工排查兜底。
+    """
+    bad = []
+    for d in TEXT_FILES:
+        for name, tag, form in _doubling_hits(_read(d)):
+            bad.append(f"{d}  {tag}：{form}")
+    assert not bad, (
+        "以下位置出现「规范名被自己粘住」的替换残留（该删掉重复的那一段）：\n"
+        + "\n".join(sorted(set(bad)))
+    )
