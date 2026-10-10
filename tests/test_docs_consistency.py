@@ -35,6 +35,20 @@ def _read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
+def _is_row(line: str) -> bool:
+    """是不是一条 Markdown 表格行（以 | 起、以 | 止、至少两根竖线）。"""
+    s = line.strip()
+    return s.startswith("|") and s.endswith("|") and s.count("|") >= 2
+
+
+def _strip_quote(line: str) -> str:
+    """剥掉行首的引用块标记（> / > ），用于比较"是不是同一段文字"。"""
+    s = line.strip()
+    while s.startswith(">"):
+        s = s[1:].strip()
+    return s
+
+
 def _sections(block: str):
     """取 `## 一、标题（…）〔…〕` 的 (节号, 节名)，节名剥掉括注。"""
     return re.findall(r"^## ([一二三四五六七八九十]+)、(.+?)(?:（|〔|\s*$)", block, re.M)
@@ -244,4 +258,82 @@ def test_criteria_do_not_leak_the_test_corpus():
         "判准文档里出现了测试语料的特征，等于泄露答案："
         + str(leaked)
         + " → 把它们抽象化（保留「为何加这条判据」的说明，去掉可识别特征与该篇的结论）"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 文档**结构**卫生：表格与引用块的格式破损
+# 2026-10-10 审计查出：上面的网管的是「内容自相矛盾」，管不到**Markdown 结构**
+# 层面的破坏——它们同样让读者读到错的东西，且肉眼极难发现：
+# 表格断开后仍会渲染，只是后半张脱离表头；漏出引用块的那两行则成了孤立竖线文本。
+# 这三条各对应一处真实缺陷（三处都在同一批文档里，且都已存在一段时间）。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+STRUCTURAL_DOCS = DOCS + TEMPLATES
+
+
+def test_no_table_row_leaks_out_of_blockquote():
+    """表格行不得紧跟在引用块（>）之后——那是表格从引用块里「漏」出来的形态。
+
+    事故：reading-codes.md §1 的 WTD/WTDD 三列表，有两行（「出现位置」「在论证中的
+    角色」）漏了 `>` 前缀，落在引用块之外。它们在原文里属于同一张表，
+    漏出后既脱离表格、又脱离引用块——读者看到的是两行孤立的竖线文本。
+    """
+    bad = []
+    for d in STRUCTURAL_DOCS:
+        lines = _read(d).split("\n")
+        for i in range(1, len(lines)):
+            if _is_row(lines[i]) and lines[i - 1].lstrip().startswith(">"):
+                bad.append(f"{d}:{i + 1}  {lines[i].strip()[:40]}")
+    assert not bad, (
+        "以下位置表格行漏出了引用块（该补 `>` 前缀，或把它移回它所属的表格）：\n"
+        + "\n".join(bad)
+    )
+
+
+def test_tables_are_not_interrupted_by_prose():
+    """表格不得被非表格行打断（row → 散文 → row）。
+
+    事故：batch-workflow.md §3.2 的状态取值表中间插了一行重复残句
+    （`★初值——尚未定档……`），整张表在此处断开，后半张（解码状态各行）
+    脱离表头渲染，读者拿不到「这个取值属于哪个字段」。
+    """
+    bad = []
+    for d in STRUCTURAL_DOCS:
+        lines = _read(d).split("\n")
+        for i in range(1, len(lines) - 1):
+            prev, cur, nxt = lines[i - 1], lines[i], lines[i + 1]
+            if not _is_row(prev) or _is_row(cur) or not cur.strip():
+                continue
+            if cur.lstrip().startswith((">", "#", "```", "<!--")):
+                continue
+            if _is_row(nxt):
+                bad.append(f"{d}:{i + 1}  打断行={cur.strip()[:40]}")
+    assert not bad, (
+        "以下位置表格被非表格行打断（该行应并入上行、或移到表格之外）：\n"
+        + "\n".join(bad)
+    )
+
+
+def test_no_duplicated_fragment_line():
+    """不得出现「某行是上一行的尾段重复」（复制粘贴没删干净）。
+
+    事故：reading-codes.md 的 RFW 判据块末尾，「**不含研究设计**。」独立成了一行，
+    与上一行结尾完全重复。逐句读的人会以为作者在**强调**，
+    实际是编辑残留——判准文档里的冗余比一般文档更危险。
+    """
+    bad = []
+    for d in STRUCTURAL_DOCS:
+        lines = _read(d).split("\n")
+        for i in range(1, len(lines)):
+            if _is_row(lines[i]) or _is_row(lines[i - 1]):
+                continue
+            prev, cur = _strip_quote(lines[i - 1]), _strip_quote(lines[i])
+            if not cur:
+                continue
+            if 3 < len(cur) < 80 and prev.endswith(cur) and cur != prev:
+                bad.append(f"{d}:{i + 1}  残句={cur[:40]}")
+    assert not bad, (
+        "以下位置出现「上一行尾段的重复残句」（该删掉这一行）：\n"
+        + "\n".join(bad)
     )
