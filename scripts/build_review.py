@@ -502,6 +502,15 @@ def imbalance_warning(rows, threshold=3):
 
 # ---------------------------------------------------------------- 主流程
 
+class NoHeaderRowError(ValueError):
+    """CSV 没有表头行（0 字节 / 首行空白 / 首行就是数据行）。
+
+    ★继承 `ValueError`：此前这里直接 `raise ValueError(...)`，外部按 ValueError
+    捕获的写法（含测试）语义不变；只是让 `main` 能**单独**把这个成因挑出来，
+    给一行可读提示而不是漏出 Python 堆栈。
+    """
+
+
 def load_rows(path):
     """★**按列位取数**，不用 `csv.DictReader`（2026-10-10 修）。
 
@@ -516,10 +525,10 @@ def load_rows(path):
             header = next(reader)
         except StopIteration:
             # 与 `DictReader.fieldnames` 一致：空文件 → 无表头行。
-            raise ValueError("CSV 无表头行")
+            raise NoHeaderRowError("CSV 无表头行")
         if not header:
             # 首行为空行时 `next()` 返回 `[]`；`DictReader` 同样判作无表头行。
-            raise ValueError("CSV 无表头行")
+            raise NoHeaderRowError("CSV 无表头行")
         mapping, unknown = resolve_columns(header)
         # ★`list.index` 取的是**首次**出现的位置——重复表头下正是我们要的那一列。
         index = {canon: header.index(col) for canon, col in mapping.items()}
@@ -576,6 +585,29 @@ def pad(text: str, width: int = 16) -> str:
 def check(path):
     rows, mapping, unknown = load_rows(path)
     problems, warnings = [], []
+
+    # ★「首行认不出任何必需列」= 表头行整行缺失（2026-10-10 修）。
+    #   实测踩过：把数据行当表头的 RCOS **不报错**，而是报一堆
+    #   「缺少必需列: 作者, 年份, …」外加「未识别的列: 1, 张三, 2020, …」——
+    #   看着像"表头名写得不对"，用户于是去逐列改列名，而真正该做的是补上表头行。
+    #   判据与 `resolve_columns` 同源：必需列一个都没映射出来，就不是"写法不规范"，
+    #   而是"根本没有表头"。此处提前返回：下面那些逐列/逐行的检查都是**列级**诊断，
+    #   列都没认出来时它们只会输出误导信息。
+    # ★判据只有一条：**必需列一个都没认出**。
+    #   不要加 `mapping` 非空的前提——`甲,2020` 这种"一行数据"会让 `mapping` 恰好为空，
+    #   加了这个前提就被短路跳过，退化输入又漏回"缺少必需列 + 未识别的列"那条歧路。
+    if not [f for f in REQUIRED if f in mapping]:
+        problems.append(
+            "未找到表头行：首行未识别出任何必需列（%s）。RCOS 的首行必须是表头，"
+            "请用 `init` 生成模板填入，或先在文件开头补上表头行。"
+            % "、".join(label(f) for f in REQUIRED)
+        )
+        print("=" * 60)
+        print("RCOS 完备性检查")
+        print("=" * 60)
+        print(f"文件: {path}")
+        print("文献数: （未读到——首行不是表头）")
+        return rows, mapping, problems, warnings
 
     print("=" * 60)
     print("RCOS 完备性检查")
@@ -766,7 +798,13 @@ def main() -> int:
             return 1
         keepwords = load_stopwords(args.keep)
 
-    rows, _mapping, problems, warnings = check(args.csv_path)
+    try:
+        rows, _mapping, problems, warnings = check(args.csv_path)
+    except NoHeaderRowError:
+        # ★退化 CSV 要给一行可读提示，不是漏出 Python 堆栈（2026-10-10 修）。
+        print("未找到表头行：%s 是空文件或首行为空。RCOS 的首行必须是表头，"
+              "请用 `init` 生成模板后逐篇填写。" % args.csv_path, file=sys.stderr)
+        return 1
 
     if not args.check_only and rows:
         print_cluster(rows, extra_stopwords=extra_stopwords, keepwords=keepwords)

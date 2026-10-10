@@ -91,7 +91,8 @@ python3 scripts/sync_corpus.py attach 文献登记表.csv L0007 --text /tmp/ocr.
 （扫描件，需先 OCR）。**扫描件本脚本不代做 OCR**，只会报警——空文本不等于
 「原文没写」，别据空文件写 review。
 
-`build_review.py rcos` 的退出码：`0` 无阻断问题、`1` 有阻断问题（如空表、缺必需栏）。
+`build_review.py rcos` 的退出码：`0` 无阻断问题、`1` 有阻断问题（如空表、缺必需栏、**找不到表头行**）。
+「找不到表头行」指首行未识别出任何必需列——0 字节文件、首行空白、**首行直接就是数据行**都归此类，会给一行可读提示而不是 Python 堆栈。
 聚类提示只是词频参考，可用 `--stopwords` / `--keep` 增删词表。
 
 `lint_review.py` 的退出码：`0` 无 error、`1` 有 error（`--strict` 时 warning 也算）。
