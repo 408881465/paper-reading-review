@@ -250,7 +250,11 @@ def resolve_columns(fieldnames):
                 #   2026-10-09 教训：静默丢弃会让"两个密码撞一个规范名"完全不可见——
                 #   报告照样显示"未识别 0 列"，而那一列的数据根本没被读取
                 #   （「待探讨的相关问题」就这样丢过一次）。
-                if raw not in mapping.values():
+                # ★**逐字相同**的列名同样要报（2026-10-10 修）。此前写的是
+                #   `if raw not in mapping.values()`，把"同名"这一种（最像手滑
+                #   复制的一列）判成"已报过"而放行 → 报告写着"识别到的列: …"、
+                #   **一条提示都没有**，而第二列的数据从头到尾没被读过。
+                if raw not in unknown:
                     unknown.append(raw)
             else:
                 mapping[canon] = raw
@@ -492,16 +496,33 @@ def imbalance_warning(rows, threshold=3):
 # ---------------------------------------------------------------- 主流程
 
 def load_rows(path):
+    """★**按列位取数**，不用 `csv.DictReader`（2026-10-10 修）。
+
+    实测踩过：两列都叫「现有文献研究空白」时，`DictReader` 对同名表头**后写覆盖**，
+    `raw["现有文献研究空白"]` 返回的是**第二列**的值，第一列整列数据静默消失。
+    `resolve_columns` 的既有口径是"保留第一个"，取数就必须跟着取**第一个**，
+    否则映射与取值各按一套口径——报告与聚类都在拿另一列的数据算。
+    """
     with open(path, newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        if not reader.fieldnames:
+        reader = csv.reader(fh)
+        try:
+            header = next(reader)
+        except StopIteration:
+            # 与 `DictReader.fieldnames` 一致：空文件 → 无表头行。
             raise ValueError("CSV 无表头行")
-        mapping, unknown = resolve_columns(reader.fieldnames)
+        if not header:
+            # 首行为空行时 `next()` 返回 `[]`；`DictReader` 同样判作无表头行。
+            raise ValueError("CSV 无表头行")
+        mapping, unknown = resolve_columns(header)
+        # ★`list.index` 取的是**首次**出现的位置——重复表头下正是我们要的那一列。
+        index = {canon: header.index(col) for canon, col in mapping.items()}
         rows = []
-        for raw in reader:
+        for values in reader:
+            if not values:                      # 与 `DictReader` 一致：跳过空行
+                continue
             row = {}
-            for canon, col in mapping.items():
-                row[canon] = (raw.get(col) or "").strip()
+            for canon, i in index.items():
+                row[canon] = (values[i] if i < len(values) else "").strip()
             rows.append(row)
     return rows, mapping, unknown
 
@@ -569,7 +590,11 @@ def check(path):
         problems.append("缺少必需列: %s（可接受表头见 FIELD_ALIASES）"
                         % ", ".join(label(f) for f in missing_cols))
     if unknown:
-        warnings.append("未识别的列（将忽略）: %s" % ", ".join(unknown))
+        # ★两个成因合并报在同一处：真正不认得的表头，以及**与前面的列指向
+        #   同一密码**的重复列。后者尤其要报——它意味着有一列数据没被读取。
+        warnings.append(
+            "以下表头列被忽略（无法识别，或与前面的列指向同一密码）: %s"
+            % ", ".join(unknown))
     print("识别到的列: %s" % (", ".join(mapping[c] for c in mapping) or "（无）"))
 
     # 逐行检查

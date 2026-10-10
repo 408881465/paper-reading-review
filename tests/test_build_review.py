@@ -532,3 +532,72 @@ def test_mixed_language_clustering_surfaces_real_theme():
     got = {w for w, _ in (_bm.cluster_hint(rows) or [])}
     for noise in ("fuchs", "kim", "kwon", "however", "still", "gap", "findings"):
         assert noise not in got, f"噪声「{noise}」仍在候选里：{sorted(got)}"
+
+
+# ------------------------------------------------------------ 表头重复列
+
+def _write_header_csv(path, header, rows):
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh)
+        w.writerow(header)
+        w.writerows(rows)
+    return path
+
+
+def _dup_header_case(first, second):
+    """两列指向同一密码：第 first 列、第 second 列各写一句话，便于分辨读到的是哪一列。"""
+    header = ["作者", "年份", "现有文献综述", "研究结果（作者发现了什么）", first, second]
+    values = ["甲", "2020", "综述内容", "研究发现", "【第一列空白】", "【第二列空白】"]
+    return header, values
+
+
+def test_exactly_duplicated_header_is_reported_not_silently_dropped():
+    """★表头**逐字相同**的两列也必须报出来——此前只有"不同表头撞同一密码"才报。
+
+    实测踩过：`resolve_columns([..., "现有文献研究空白", "现有文献研究空白"])`
+    返回 `unknown == []`；报告写着"识别到的列: …"、**一条提示都没有**，
+    而第二列的数据从头到尾没被读过。守卫写的是 `if raw not in mapping.values()`，
+    恰好把**同名**这一种（最像手滑复制的一列）判成"已报过"而放行。
+    """
+    _, unknown = resolve_columns(["作者", "年份", "现有文献研究空白", "现有文献研究空白"])
+    assert unknown == ["现有文献研究空白"], f"逐字重复的列名被静默吞掉：{unknown}"
+
+
+def test_duplicate_header_reads_the_first_column(tmp_path):
+    """★同名两列时必须读**第一列**——`csv.DictReader` 会把值覆盖成第二列。
+
+    实测踩过：两列都叫「现有文献研究空白」，第一列写「【第一列空白】」、
+    第二列写「【第二列空白】」，`load_rows` 读回的是**第二列**，第一列整列静默消失。
+    `resolve_columns` 的既有口径是"保留第一个"，取数就必须跟着取第一个，
+    否则映射与取值**各按一套口径**，报告与聚类都在拿另一列的数据算。
+    """
+    header, values = _dup_header_case("现有文献研究空白", "现有文献研究空白")
+    path = _write_header_csv(tmp_path / "dup_same.csv", header, [values])
+    rows, mapping, _ = B.load_rows(str(path))
+    assert mapping["gap"] == "现有文献研究空白"
+    assert rows[0]["gap"] == "【第一列空白】", \
+        f"读到的不是第一列（列位口径与 resolve_columns 不一致）：{rows[0]['gap']!r}"
+
+
+def test_alias_collision_also_reads_the_first_column(tmp_path):
+    """★守卫（防改过头）：用**别名**撞名时，取数口径必须仍是第一列。
+
+    `现有文献研究空白` + `空白` 这类撞名此前已能报出（进 `unknown`），
+    且因 `DictReader` 的键取的是第一列的名字，取数**本来就是对的**。
+    改列位取数时最容易顺手取"最后一次出现"，把这里反而改坏——故固定住。
+    """
+    header, values = _dup_header_case("现有文献研究空白", "空白")
+    path = _write_header_csv(tmp_path / "dup_alias.csv", header, [values])
+    rows, mapping, unknown = B.load_rows(str(path))
+    assert mapping["gap"] == "现有文献研究空白"
+    assert unknown == ["空白"], f"别名撞名必须报出后一列：{unknown}"
+    assert rows[0]["gap"] == "【第一列空白】", f"读到的不是第一列：{rows[0]['gap']!r}"
+
+
+def test_duplicate_column_is_surfaced_by_check(tmp_path):
+    """★用户看到的是 `check` 的输出：重复列必须出现在提示里，不能"无提示 + 检查通过"。"""
+    header, values = _dup_header_case("现有文献研究空白", "现有文献研究空白")
+    path = _write_header_csv(tmp_path / "dup_same.csv", header, [values])
+    _, _, problems, warnings = B.check(str(path))
+    assert any("现有文献研究空白" in w for w in warnings + problems), \
+        f"重复位列没有出现在任何提示里：warnings={warnings} problems={problems}"
