@@ -123,11 +123,30 @@ def clean_page_text(raw: str, drop_positions=()) -> str:
 
     drop_positions：由 detect_page_number_lines 判定的真页码位置
     （0=首个非空行，1=末个非空行）。默认不删任何裸数字。
+
+    ★行号基准必须与 detect_page_number_lines **完全一致（都用原始行）**：
+    检测器按原始行算出 pos=0/1，若这里先删掉 `_HEADER_NOISE` 行再重新编号，
+    行号就整体前移，`drop_positions` 会落到**正文行**上。
+    2026-10-10 复现的真实事故：页眉/页脚写成「第 N 页」时（`_PAGE_CN` 认它是页码，
+    `_HEADER_NOISE` 也把同一行当噪声删），**每页静默丢一行正文**
+    （页眉形态丢首行、页脚形态丢末行），全程无任何告警。
     """
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    raw_lines = text.split("\n")
 
+    # ① 先在**原始行**上定位要删的页码行（与检测器同一基准），再统一删除。
+    filled_raw = [i for i, line in enumerate(raw_lines) if line.strip()]
+    to_drop = set()
+    for pos, line_no in ((0, filled_raw[0] if filled_raw else None),
+                         (1, filled_raw[-1] if filled_raw else None)):
+        if pos in drop_positions and line_no is not None:
+            to_drop.add(line_no)
+
+    # ② 再逐行过滤：页码行与页眉噪声都删，其余原样保留（含空行，用于压段落）。
     lines = []
-    for line in text.split("\n"):
+    for i, line in enumerate(raw_lines):
+        if i in to_drop:
+            continue
         stripped = line.strip()
         if not stripped:
             lines.append("")
@@ -135,16 +154,6 @@ def clean_page_text(raw: str, drop_positions=()) -> str:
         if _HEADER_NOISE.match(stripped):
             continue
         lines.append(line)
-
-    # 页码只在首/尾各判一次，且必须按「未删行」的位置对齐，
-    # 所以先标记再统一删除，避免边删边错位。
-    filled = [i for i, line in enumerate(lines) if line.strip()]
-    to_drop = set()
-    for pos, line_no in ((0, filled[0] if filled else None),
-                         (1, filled[-1] if filled else None)):
-        if pos in drop_positions and line_no is not None:
-            to_drop.add(line_no)
-    lines = [line for i, line in enumerate(lines) if i not in to_drop]
 
     text = "\n".join(lines)
     text = _HYPHEN_BREAK.sub(r"\1\2", text)      # 接回跨行断词

@@ -611,3 +611,58 @@ def test_status_catches_tier_written_with_a_space(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "L001" in out, "带空格的档位行被漏检了（静默停滞回归）"
     assert "L002" in out
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BUG-3 回归：同一刊同卷的 DOI 型文件名不得被剥成公共前缀
+# 2026-10-10 复现：`_DUP_SUFFIX` 的「裸数字后缀」分支允许**连字符**分隔
+# （`[ _\-]+\d+`），剥两层后把 DOI 一路剥成公共前缀：
+#     s40561-025-00413-1 → s40561-025-00413 → s40561-025
+#     s40561-025-00521-4 → s40561-025-00521 → s40561-025   ← 撞名
+# 于是两篇毫不相干的论文被判「文件名归一后同名」，纳入判定被打成「待核查」，
+# 且 `parse_author_title` 的标题字段被截断成 s40561-025（丢掉文章身份）。
+# ★旧测试 `test_normalize_title_keeps_doi_like_names_distinct` 只比了**前缀不同**
+#   的两个 DOI（s40561… vs s42330…），恰好绕过这一形态，所以这个 bug 一直绿着。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_normalize_title_keeps_same_journal_dois_distinct():
+    """同一刊同卷的两篇不同论文（DOI 前缀相同）必须保持不同名。"""
+    a = sc.normalize_title("s40561-025-00413-1.pdf")
+    b = sc.normalize_title("s40561-025-00521-4.pdf")
+    assert a != b, f"同刊同卷的两篇不同论文归一后撞名：{a!r}"
+    assert "00413" in a, f"DOI 主体被剥掉了：{a!r}"
+    assert "00521" in b, f"DOI 主体被剥掉了：{b!r}"
+
+
+def test_parse_author_title_keeps_full_doi_stem():
+    """DOI 型文件名不得被截断——标题字段丢掉文章身份，整张表的检索都会错。"""
+    title, author = sc.parse_author_title("s40561-025-00413-1.pdf")
+    assert title == "s40561-025-00413-1", f"标题被截断成 {title!r}"
+    assert author == ""
+
+
+def test_normalize_title_still_strips_real_dup_markers():
+    """收窄裸数字规则后，**真正的**重复标记必须照旧剥掉（含连字符形态）。"""
+    assert sc.normalize_title("论文标题-副本.pdf") == sc.normalize_title("论文标题.pdf")
+    assert sc.normalize_title("论文标题 2.pdf") == sc.normalize_title("论文标题.pdf")
+    assert sc.normalize_title("论文标题_2.pdf") == sc.normalize_title("论文标题.pdf")
+    assert sc.normalize_title("论文标题 (1).pdf") == sc.normalize_title("论文标题.pdf")
+    assert sc.normalize_title("论文标题_副本 (1).pdf") == sc.normalize_title("论文标题.pdf")
+
+
+def test_same_journal_dois_are_not_flagged_as_same_name(registry, tmp_path):
+    """端到端：同刊同卷的两篇不同论文不得被报成「文件名归一后同名」。"""
+    src = tmp_path / "src"
+    _write(src / "s40561-025-00413-1.pdf", "甲文的内容")
+    _write(src / "s40561-025-00521-4.pdf", "乙文的内容，与甲无关")
+    sc.main(["init", registry])
+    sc.main(["scan", registry, "--source", str(src)])
+
+    rows = _read(registry)
+    assert len(rows) == 2
+    flagged = [r for r in rows if "文件名归一后同名" in (r["备注"] or "")]
+    assert not flagged, f"两篇不同论文被误报同名：{[r['文件名'] for r in flagged]}"
+    # ★不要断言「纳入判定 != 待核查」——新扫入的行**默认就是**待核查（还没分流），
+    #   那是正常初态，不是 bug 信号。真正的信号是备注里有没有同名标记（上一行）。
+    assert all("同名" not in (r["备注"] or "") for r in rows), \
+        f"备注里出现了同名标记：{[(r['文件名'], r['备注']) for r in rows]}"

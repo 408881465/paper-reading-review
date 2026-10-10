@@ -127,3 +127,55 @@ def test_offset_detected_from_few_pages_after_period_fix():
     pages[4] = "正文第 5 页的内容。\n\n·20·"
     import batch_extract as be
     assert be.detect_printed_offset(pages) == 15
+
+
+# ---------------------------------------------------------------- BUG-1 回归
+# ★2026-10-10 复现的**静默数据丢失**：页眉/页脚写成「第 N 页」时，每页会丢掉一行正文。
+#   成因是「行号基准不一致」——`detect_page_number_lines` 按**原始行**判页码位置
+#   （0=首个非空行／1=末个非空行），而 `clean_page_text` 先删 `_HEADER_NOISE` 行、
+#   再重新算 filled，于是 `drop_positions` 整体前移一位，落到了正文行上。
+#   页眉形态丢首行、页脚形态丢末行，**都没有任何告警**——直接违反本技能
+#   「证据可回指、不丢原料」的核心纪律。
+
+
+def test_page_number_in_header_does_not_eat_first_body_line():
+    """页码写在页首（`第 N 页`）时，删掉的必须是页码行，不是正文首行。"""
+    pages = [f"第 {i + 1} 页\n正文首行{i}\n正文第二行{i}\n正文末行{i}\n" for i in range(4)]
+    found = E.detect_page_number_lines(pages)
+    assert found == {(i, 0) for i in range(4)}, found
+    for i, raw in enumerate(pages):
+        out = E.clean_page_text(raw, {p for idx, p in found if idx == i})
+        assert f"第 {i + 1} 页" not in out, f"页码行没删掉：{out!r}"
+        assert f"正文首行{i}" in out, f"第{i + 1}页的正文首行被当成页码删掉了：{out!r}"
+        assert f"正文末行{i}" in out
+
+
+def test_page_number_in_footer_does_not_eat_last_body_line():
+    """页码写在页尾（`第 N 页`）时同理：不能把末行正文吃掉。"""
+    pages = [f"正文首行{i}\n正文末行{i}\n第 {i + 1} 页\n" for i in range(4)]
+    found = E.detect_page_number_lines(pages)
+    assert found == {(i, 1) for i in range(4)}, found
+    for i, raw in enumerate(pages):
+        out = E.clean_page_text(raw, {p for idx, p in found if idx == i})
+        assert f"第 {i + 1} 页" not in out, f"页码行没删掉：{out!r}"
+        assert f"正文首行{i}" in out, f"第{i + 1}页的正文首行被删掉了：{out!r}"
+        assert f"正文末行{i}" in out, f"第{i + 1}页的正文末行被当成页码删掉了：{out!r}"
+
+
+def test_header_noise_before_page_number_keeps_body_intact():
+    """页码行前面还有别的页眉行时，正文行一行都不能少。
+
+    ★这里 `detect` 本就不该命中：页码不在「首个非空行」位置（首位是期刊名），
+    按位置判定的检测器识别不到它——这是**安全**结果（宁可不标也不误删）。
+    本用例锁两件事：① 即便检测器没命中，「第 N 页」仍由 `_HEADER_NOISE` 删掉；
+    ② 正文必须原样保留（这正是 2026-10-10 错位 bug 会破坏的地方）。
+    ★顺带固定一条**有意的**边界：期刊名这类页眉行**不在** `_HEADER_NOISE` 里，
+    不会被删——不要把本用例改成"期刊名应被删掉"。
+    """
+    pages = [f"全球教育展望\n第 {i + 1} 页\n正文首行{i}\n正文末行{i}\n" for i in range(4)]
+    assert E.detect_page_number_lines(pages) == set()
+    for i, raw in enumerate(pages):
+        out = E.clean_page_text(raw, set())
+        assert f"正文首行{i}" in out and f"正文末行{i}" in out, out
+        assert f"第 {i + 1} 页" not in out, f"页眉里的「第 N 页」没删掉：{out!r}"
+        assert "全球教育展望" in out, f"期刊名不在噪声表里，不该被删：{out!r}"

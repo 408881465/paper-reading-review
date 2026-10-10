@@ -699,3 +699,96 @@ def test_rerun_message_reports_actual_workload(tmp_path, capsys):
     out_text = capsys.readouterr().out
     assert "略过" in out_text, f"重跑未报出跳过的篇数：{out_text!r}"
     assert ".md/.txt 直接读入" not in out_text, "重跑仍报过滤前的工作量"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 去重守卫必须覆盖三条队列（不只是 PDF）
+# 2026-10-10 复现：`is_dedup_row` 全仓只有 1 个调用点，且在 PDF 队列内部——
+# `.docx` 与 `.md/.txt` 两条队列走 `continue` 绕过了它。于是已被 sync_corpus
+# 判为「去重-重复／纳入判定=去重／状态=跳过」的行照样被抽，状态被覆盖成
+# 「已抽文本」，并产出两份内容相同的文本——**正好制造了报告里警告的"读两遍"**。
+# 与 2026-10-09 那次（这两条队列缺「已抽的跳过」）是同一族、同一条漏网之鱼：
+# **每条新加的守卫只加在 PDF 队列上，另两条队列就被落下。**
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _make_min_docx(path, text="正文内容"):
+    """最小可用 .docx（只含 word/document.xml），供队列测试用。"""
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml",
+                   '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+                   'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>' + text +
+                   '</w:t></w:r></w:p></w:body></w:document>')
+    return path
+
+
+def test_dedup_docx_row_is_not_extracted(tmp_path):
+    """★.docx 队列同样不得抽取去重行（守卫此前只在 PDF 队列）。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    a = _make_min_docx(src / "通知_张三.docx")
+    (src / "通知_张三 副本.docx").write_bytes(a.read_bytes())     # 字节完全相同
+
+    reg = str(tmp_path / "reg.csv")
+    out = tmp_path / "out"
+    assert sc.main(["init", reg]) == 0
+    sc.main(["scan", reg, "--source", str(src), "--record-duplicates"])
+
+    dup = [r for r in _read(reg) if r["档位"] == "去重-重复"]
+    assert dup, "未登记出重复行，无法验证"
+    dup_id = dup[0]["编号"]
+    assert dup[0]["解码状态"] == "跳过"
+
+    assert be.main(["--registry", reg, "--outdir", str(out)]) == 0
+
+    after = {r["编号"]: r for r in _read(reg)}
+    assert after[dup_id]["解码状态"] == "跳过", \
+        ".docx 去重行的「跳过」被覆盖了——守卫没有覆盖 .docx 队列"
+    made = sorted(p.name for p in pathlib.Path(out).glob("*.txt"))
+    assert len(made) == 1, f".docx 重复行也被抽了，产出 {len(made)} 份文本：{made}"
+
+
+def test_dedup_md_row_is_not_extracted(tmp_path):
+    """★.md/.txt 队列同样不得抽取去重行。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    note = src / "笔记A.md"
+    note.write_text("# 手记\n\n正文内容，足够长以便判重。\n", encoding="utf-8")
+    (src / "笔记A 副本.md").write_bytes(note.read_bytes())        # 字节完全相同
+
+    reg = str(tmp_path / "reg.csv")
+    out = tmp_path / "out"
+    assert sc.main(["init", reg]) == 0
+    sc.main(["scan", reg, "--source", str(src), "--record-duplicates"])
+
+    dup = [r for r in _read(reg) if r["档位"] == "去重-重复"]
+    assert dup, "未登记出重复行，无法验证"
+    dup_id = dup[0]["编号"]
+    assert dup[0]["解码状态"] == "跳过"
+
+    assert be.main(["--registry", reg, "--outdir", str(out)]) == 0
+
+    after = {r["编号"]: r for r in _read(reg)}
+    assert after[dup_id]["解码状态"] == "跳过", \
+        ".md 去重行的「跳过」被覆盖了——守卫没有覆盖 .md/.txt 队列"
+    made = sorted(p.name for p in pathlib.Path(out).glob("*.txt"))
+    assert len(made) == 1, f".md 重复行也被抽了，产出 {len(made)} 份文本：{made}"
+
+
+def test_dedup_skip_is_reported_in_message(tmp_path, capsys):
+    """去重行被跳过时必须报出来（不得静默），且三条队列计数合并。"""
+    src = tmp_path / "src"
+    src.mkdir()
+    a = _make_min_docx(src / "通知_张三.docx")
+    (src / "通知_张三 副本.docx").write_bytes(a.read_bytes())
+
+    reg = str(tmp_path / "reg.csv")
+    out = tmp_path / "out"
+    assert sc.main(["init", reg]) == 0
+    sc.main(["scan", reg, "--source", str(src), "--record-duplicates"])
+    assert be.main(["--registry", reg, "--outdir", str(out)]) == 0
+    out_text = capsys.readouterr().out
+    # ★断言必须用 batch_extract 自己的 msg 措辞：「重复」两字在 sync_corpus scan 的输出里
+    #   也会出现（同名不同内容警告），用宽词会让本用例**因错误理由通过**。
+    assert "已判为重复" in out_text and "去重决定跳过" in out_text, \
+        f"跳过 .docx 重复行时必须由 batch_extract 明确报出，不得静默：{out_text!r}"
