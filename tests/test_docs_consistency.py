@@ -363,11 +363,6 @@ LEGACY_CODE_LABELS = {
     "研究结果": "研究结果（作者发现了什么）",
 }
 
-# ★RCOS 的 20 列**本来就不含「作者要做什么」**（只有「作者实际做了什么」）。
-#   这是列集设计的既有事实，不是本次改名的漏改——按事实登记，别让一致性测试
-#   去逼一个不存在的列。但一旦有人补上该列，上面的断言会失败并要求四处同步。
-RCOS_ABSENT = {"作者要做什么"}
-
 
 def test_canonical_code_names_are_identical_everywhere():
     """★★ 14 个规范名必须在**文档、脚本、CSV 表头**三处逐字一致。
@@ -391,12 +386,8 @@ def test_canonical_code_names_are_identical_everywhere():
         assert not missing, f"{rel} 缺这些规范名（改名未同步）：{missing}"
 
     header = _read("assets/rcos-template.csv").splitlines()[0]
-    missing = [n for n in CANONICAL_CODES if n not in header and n not in RCOS_ABSENT]
+    missing = [n for n in CANONICAL_CODES if n not in header]
     assert not missing, f"assets/rcos-template.csv 表头缺这些规范名：{missing}"
-    assert not any(n in header for n in RCOS_ABSENT), (
-        f"RCOS 表头出现了 {sorted(RCOS_ABSENT)}——若是有意补列，"
-        "请同步 batch-workflow §5.3、build_review.cmd_init、tests/test_build_review.SPEC_5_3，"
-        "并删掉本测试里的 RCOS_ABSENT")
 
 
 def test_no_legacy_code_name_in_table_cells():
@@ -459,7 +450,7 @@ def test_no_canonical_name_doubling_artifact():
 
     背景：2026-10-10 改名覆盖 17 个文件、230+ 处，手改与脚本替换混用，
     事后在 reading-codes.md 里查出三处「与现有文献观点与现有文献观点一致的研究发现」——
-    **所有既有测试当时都是绿的**（子串检查查不出"自己粘自己"）。
+    **所有既有测试当时都是绿的**（子串检查查不出"自己粘上自己"）。
     这条网就是替那次人工排查兜底。
     """
     bad = []
@@ -470,3 +461,60 @@ def test_no_canonical_name_doubling_artifact():
         "以下位置出现「规范名被自己粘住」的替换残留（该删掉重复的那一段）：\n"
         + "\n".join(sorted(set(bad)))
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RCOS 列集：**四处必须同一份**
+# 历史事故（2026-10-08）：§5.3 文档写 20 列、assets/rcos-template.csv 与
+# build_review.cmd_init 各硬编码 11 列——差集里正好有 §5.3 点名"不可省"的
+# `理论依据`，用户照文档填表反被报「未识别的列（将忽略）」。
+# 修复时是靠人工把四处抄齐；本测试把「抄齐」变成机器可查，防止再次漂移。
+# 与 test_build_review 的分工：那边测 SPEC_5_3（手抄常量）＝CSV＝init，
+# 这边**直接解析 §5.3 的代码块**，把文档本身也纳入比对。
+# ═══════════════════════════════════════════════════════════════════════════════
+
+RCOS_COLUMN_OWNERS = ("references/batch-workflow.md §5.3", "assets/rcos-template.csv",
+                      "scripts/build_review.cmd_init", "tests/test_build_review.SPEC_5_3")
+
+
+def _spec_5_3_columns():
+    """从 batch-workflow §5.3 的代码块里取出列集（代码块跨行，故拼回一行再切）。"""
+    bw = _read("references/batch-workflow.md")
+    blk = bw[bw.index("### 5.3"):]
+    blk = blk[:blk.index("### 5.4")]
+    m = re.search(r"```\n(.*?)```", blk, re.S)
+    assert m, "§5.3 里找不到列集代码块"
+    return [c.strip() for c in m.group(1).replace("\n", "").split(",") if c.strip()]
+
+
+def test_rcos_columns_are_identical_in_all_four_places(tmp_path):
+    """★§5.3 代码块、CSV 模板、`cmd_init` 生成的、测试常量，四处必须逐字一致。"""
+    import build_review as bm  # noqa: PLC0415  （与其它测试的脚本导入方式一致）
+
+    spec = _spec_5_3_columns()
+    # ★CSV 带 BOM（utf-8-sig 写盘，否则 Windows Excel 打开中文表头乱码），
+    #   故这里必须用 utf-8-sig 读——用 utf-8 会把 BOM 粘在第一格上（'\ufeff编号'）。
+    shipped = [c.strip() for c in
+               (ROOT / "assets/rcos-template.csv").read_text(encoding="utf-8-sig")
+               .splitlines()[0].split(",")]
+    out = tmp_path / "tpl.csv"
+    bm.cmd_init(str(out))
+    inited = [c.strip() for c in out.read_text(encoding="utf-8-sig").splitlines()[0].split(",")]
+
+    assert shipped == spec, (
+        "rcos-template.csv 表头与 §5.3 代码块不一致：\n"
+        f"  §5.3   {spec}\n  CSV    {shipped}")
+    assert inited == spec, (
+        "cmd_init 的表头与 §5.3 代码块不一致（改一处必须四处同步："
+        f"{'、'.join(RCOS_COLUMN_OWNERS)}）：\n  §5.3   {spec}\n  init   {inited}")
+    # 列集里不得出现旧密码名（防有人顺手写回旧名）
+    for col in spec:
+        if col in LEGACY_CODE_LABELS:
+            raise AssertionError(f"§5.3 列集里出现旧密码名：{col} → {LEGACY_CODE_LABELS[col]}")
+    # 承诺与交付必须成对
+    assert "作者要做什么" in spec and "作者实际做了什么" in spec, \
+        "列集里承诺与交付没有成对——表中只剩一端就无法核对对齐度"
+    # 校验器真的认得每一列，且不撞名
+    mapping, unknown = bm.resolve_columns(spec)
+    assert unknown == [], f"§5.3 列集里有校验器不认得的列：{unknown}"
+    assert len(mapping) == len(spec), "有两列撞了同一规范名（会静默丢数据）"

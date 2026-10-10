@@ -346,9 +346,12 @@ def test_skill_own_boilerplate_does_not_top_the_cluster_list():
 # 2026-10-09 用形态 D 端到端跑批时查出：§5.3 规定的 RCOS 最小列集是 **20 列**，
 # 而校验器只认 12 列、模板只有 11 列、init 里还硬编码了第三份 11 列——
 # 其中就有 §5.3 点名"**不可省**"的 `理论依据`，写进去会被报「未识别的列（将忽略）」。
+# ★2026-10-10：列集扩为 **21 列**——补入「作者要做什么」。原列集只有「作者实际做了什么」，
+#   表中只剩交付、没有承诺，技能最强调的「承诺与交付必须成对读」在整合表里没法读。
 
 SPEC_5_3 = ["编号", "作者", "年份", "标题", "来源", "现有文献综述", "作者对现有文献的批评",
-            "现有文献研究空白", "理论依据（研究的必要性）", "研究结果（作者发现了什么）",
+            "现有文献研究空白", "理论依据（研究的必要性）", "作者要做什么",
+            "研究结果（作者发现了什么）",
             "与现有文献观点一致的研究发现", "与现有文献观点相反的研究发现",
             "作者实际做了什么", "作者对未来研究的建议", "批评点", "待探讨的相关问题",
             "明显的遗漏点", "逻辑能否走通（能否自圆其说）", "主题分类", "一句话定位"]
@@ -372,6 +375,33 @@ def test_theory_column_is_recommended_not_required():
     assert "rat" not in _bm.REQUIRED
 
 
+def test_wtd_column_is_recognised_and_recommended_not_required():
+    """★「作者要做什么」必须被识别，且**不得**列为必需栏。
+
+    2026-10-10 补入该列：原列集只有「作者实际做了什么」（交付），没有「作者要做什么」
+    （承诺），于是整合表里**读不出对齐度**，形态 C 那一行也无处取数。
+
+    ⚠️ 严重程度仍是"建议"而非"必需"：存量 RCOS（本课题已有 150+ 行）没有这一列，
+    若判为必需，全部会报「缺少必需栏」——`RECOMMENDED` 只让覆盖率表显示「无此列」，
+    既提示到位、又不把存量数据判成废表。
+    """
+    assert "wtd" in _bm.RECOMMENDED
+    assert "wtd" not in _bm.REQUIRED
+    assert _bm.label("wtd") == "作者要做什么", "缺中文显示名会让报告里出现 `wtd`"
+    assert _bm.norm_header("作者要做什么") in {
+        _bm.norm_header(a) for a in _bm.FIELD_ALIASES["wtd"]}
+    mapping, unknown = _bm.resolve_columns(["作者要做什么", "作者实际做了什么"])
+    assert unknown == []
+    assert mapping["wtd"] == "作者要做什么" and mapping["wtdd"] == "作者实际做了什么", \
+        "承诺与交付被映射到了同一栏——这两栏一旦合并，对齐度就无从核对"
+
+
+def test_commit_promise_pair_is_both_in_the_spec():
+    """★承诺与交付必须在列集里**成对存在**（只留一栏即等于没法核对对齐度）。"""
+    assert "作者要做什么" in SPEC_5_3
+    assert "作者实际做了什么" in SPEC_5_3
+
+
 def test_init_and_shipped_template_agree_on_columns(tmp_path):
     """★三处表头必须是同一份：§5.3 文档、`assets/rcos-template.csv`、`init` 生成的。
 
@@ -384,12 +414,12 @@ def test_init_and_shipped_template_agree_on_columns(tmp_path):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 20 列 RCOS 的**唯一映射**：poc / rpp 撞名事件
-# 2026-10-09 用一份 11 行 × 20 列的 RCOS 做形态 B 规模测试时查出。
+# 21 列 RCOS 的**唯一映射**：poc / rpp 撞名事件
+# 2026-10-09 用一份 11 行 × 20 列的 RCOS 做形态 B 规模测试时查出（2026-10-10 扩为 21 列）。
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_every_spec_column_maps_to_a_distinct_canonical():
-    """★★ 关键：§5.3 的 20 列必须**各自映射到唯一规范名**，不能两列撞一个。
+    """★★ 关键：§5.3 的每一列必须**各自映射到唯一规范名**，不能两列撞一个。
 
     此前 `poc` 的别名集里同时含「批评点」与「待探讨的相关问题」，两列撞同一规范名，
     而 `resolve_columns` 的 `setdefault` 只保留第一个 →
@@ -399,7 +429,7 @@ def test_every_spec_column_maps_to_a_distinct_canonical():
     ⚠️ 旧测试只断言"这一列出现在**某个**别名集里"，**查不出撞名**，故漏掉了它。
     """
     mapping, unknown = _bm.resolve_columns(SPEC_5_3)
-    assert unknown == [], f"20 列里有未识别的：{unknown}"
+    assert unknown == [], f"列集里有未识别的：{unknown}"
     assert len(mapping) == len(SPEC_5_3), \
         f"只映射了 {len(mapping)}/{len(SPEC_5_3)} 列——有两列撞了同一规范名"
     missing = [c for c in SPEC_5_3 if c not in mapping.values()]
