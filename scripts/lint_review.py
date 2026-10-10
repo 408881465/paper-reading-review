@@ -282,6 +282,43 @@ def count_cjk(text: str) -> int:
     return len(_CJK.findall(text)) + words
 
 
+# 「原文的文献表」小节标题：以「八、」开头、且节名讲的是**引用/参考文献**。
+# 只按序号「八、」匹配还不够——形态 B/C 的第八节（「值得关注的引用文献」）
+# 恰好也叫「引用…」，故**必须配合形态判定**（见 _budget_text）。
+# ★节名允许带括注： 正是
+#    的原写法，也是用户最容易写成的形式。
+#   但**不得**匹配 （那是 B/C 的导读产出）——
+#   故要求命中「引用信息／参考文献／文献表」这三个**整词**，而非泛泛的引用。
+_SOURCE_BIBLIO_HEADING = re.compile(
+    r"(?m)^\s{0,3}#{1,6}\s*八、\s*[^\n]{0,20}?(引用信息|参考文献|文献表)")
+
+
+def _budget_text(path: str, text: str, form: str) -> str:
+    """返回用于**字数与回指密度**计费的正文。
+
+    ★单篇详版（A）的第八节是「**原文的**文献表」（GB/T 7714 著录），
+    见 `references/review-workflow.md:130` —— 它是原文的组成，**不是本导读产出**。
+    把它计入 1500–10000 的区间，等于工具在惩罚**按骨架必填**的内容：
+    正文写满后，原文参考文献越多越容易被判超限。故 A 形态下截掉该节。
+
+    ★为什么**只对 A**：多篇／比较评述（B/C）与总报告（report）的第八节是
+    「值得关注的引用文献」，那是**导读自己的产出**（`references/cited-literature.md`
+    §4 明写「本节是导读的产出」）→ 必须照常计入；否则会开出一条
+    「把整节内容塞进第八节以规避上限」的漏洞。
+
+    无该节时原样返回（幂等）。
+    """
+    if form != "A":
+        return text
+    m = _SOURCE_BIBLIO_HEADING.search(text)
+    if not m:
+        return text
+    # 截到下一个**同级或更高级**标题为止（`##` 及以上的 `#`/`##` 都算同级）。
+    nxt = re.search(r"(?m)^\s{0,3}#{1,2}\s+\S", text[m.end():])
+    end = m.end() + nxt.start() if nxt else len(text)
+    return text[:m.start()] + text[end:]
+
+
 def split_sections(text: str):
     """→ [(标题, 正文)]，正文不含标题行。无标题时返回 [("", 全文)]。"""
     marks = list(_HEADING.finditer(text))
@@ -406,7 +443,9 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
     hi = hi_default if max_chars is None else max_chars
 
     errors, warnings, infos = [], [], []
-    chars = count_cjk(text)
+    # ★字数与回指密度都按「计费文本」算：A 形态的第八节是原文文献表，不计入。
+    budget = _budget_text(path, text, form)
+    chars = count_cjk(budget)
     sections = split_sections(text)
 
     # 0) 产物卫生：脚本污染（HTML 实体 / 反斜杠引用字面泄漏）。
@@ -516,7 +555,9 @@ def lint_text(path: str, text: str, form: str = "auto", strict: bool = False,
                             "检查是否在铺陈作者而非贡献观点")
 
     # 6) 证据可回指
-    locators = len(_LOCATOR.findall(text))
+    #    阈值分母同样用**计费字数**（chars 已排除 A 的第八节）——
+    #    否则会出现"排除了该节、却仍按全文篇幅要求回指密度"的不自洽。
+    locators = len(_LOCATOR.findall(budget))
     if "locator" not in off:
         need = max(3, chars // 800)
         if locators < need:
