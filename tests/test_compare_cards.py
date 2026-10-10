@@ -148,3 +148,58 @@ def test_ref_basis_accepts_bare_number_sequence():
     # 不含连续序列时不应乱推
     assert cc.ref_basis("回指基准：章节名") == "章节名"
     assert cc.ref_basis("回指基准：各页页脚裸数字依次为 70/99/12") not in ("K=+69",)
+
+
+def test_table_row_that_merely_mentions_the_code_is_not_a_reply():
+    """★表格行里**顺带**提到密码名的，不算这一栏的答复。
+
+    实测踩过：「## 3. 档位判据与现有文献研究空白判定（本卡必答项）」这种**合并小节**
+    早就被 `_is_dedicated` 挡住了；★可表格路径**漏了同一把尺子**，于是
+    「| 3. 档位判据与空白判定（本卡必答项） | ① 档位：T2 重要。判据…… |」
+    被读成了「现有文献研究空白」的答复 → 该栏误判成"有"。
+    与 `test_combined_section_is_not_taken_as_the_code_section` 是**同一份判准的两种写法**，
+    必须同判——当时只补了小节那一半。
+    """
+    card = "| 3. 档位判据与空白判定（本卡必答项） | ① 档位：T2 重要。判据…… |\n"
+    assert cc.field_segment(card, "现有文献研究空白", flat=True) == "", \
+        "非专节的表格行被当成了这一栏的答复"
+    assert cc.judge(card, "现有文献研究空白") == ("缺失", ""), \
+        "表格路径缺专节守卫：合并行的内容把空白栏判成了有"
+
+
+def test_items_also_ignore_a_row_that_merely_mentions_the_code():
+    """★同一把尺子要覆盖 `items()`（它走 flat=False 那条路），不只是 `judge()`。"""
+    card = "| 3. 档位判据与空白判定（本卡必答项） | ① 档位：T2 重要。判据…… |\n"
+    assert cc.items(card, "现有文献研究空白") == [], \
+        "非专节的表格行被切成了这一栏的条目"
+
+
+def test_dedicated_table_row_still_reads_as_this_column():
+    """★守卫不能收得过紧：**专讲这一栏**的表格行仍须被认出，且答复不得带尾巴。
+
+    实测踩过（同批）：原正则把行尾的竖线也吞进答复，
+    摘录尾巴上一直挂着「……意义上的空白 |」。所以这里连**摘录原文**一起断言。
+    """
+    card = "| 现有文献研究空白 | **作者未提出研究意义上的空白** |\n"
+    assert cc.judge(card, "现有文献研究空白") == \
+        ("未提出", "作者未提出研究意义上的空白"), "专节表格行读错，或答复带上了行尾竖线"
+    # 短别名单独成格时同样要认（「空白」之于「现有文献研究空白」）
+    assert cc.judge("| 空白 | **作者未提出空白** |\n", "现有文献研究空白")[0] == "未提出"
+
+
+def test_mentioning_row_does_not_shadow_a_genuine_row():
+    """★合并行在前、真答复在后时，不能被合并行截胡（顺序守卫）。"""
+    card = ("| 3. 档位判据与空白判定（本卡必答项） | ① 档位：T2 重要。判据…… |\n"
+            "| 现有文献研究空白 | **作者未提出研究意义上的空白** |\n")
+    assert cc.judge(card, "现有文献研究空白")[0] == "未提出"
+
+
+def test_table_reply_is_taken_from_the_cell_right_after_the_label():
+    """★答复只取**标签格的下一个格子**：多列行不得把后面的备注也吞进来。
+
+    实测踩过（同批）：`\\|([^\\n]*)` 一路吞到行尾，`| 空白 | 答复 | 依据 |`
+    会读出「答复 | 依据 |」——后面那列的备注被算成了这一栏的正文。
+    """
+    card = "| 现有文献研究空白 | **作者未提出研究意义上的空白** | 依据：见 §3 |\n"
+    assert cc.field_segment(card, "现有文献研究空白", flat=True) == "作者未提出研究意义上的空白", \
+        "答复把同一行后面几列也吞进来了"

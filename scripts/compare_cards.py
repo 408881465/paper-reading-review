@@ -160,10 +160,21 @@ def field_segment(text: str, name: str, flat: bool = False) -> str:
             if body.strip():
                 return _clean(body) if flat else body
     # ② 表格行（结构化答复的规范位置）
+    # ★与「小节」路径**同一把尺子**（2026-10-10 修）：先认出密码名落在哪个格子，
+    #   再用 `_is_dedicated` 判它是不是**专讲这一栏**——顺带提到密码名的不算。
+    #   实测踩过：`| 3. 档位判据与空白判定（本卡必答项） | ① 档位：T2 重要。判据…… |`
+    #   被读成「现有文献研究空白」的答复 → 该栏误判成"有"。当时只给小节路径补了守卫，
+    #   **只修了一半**，表格路径仍会误归属。
+    # ★答复**只取标签格的下一个格子**：原先 `\|([^\n]*)` 一路吞到行尾，`| 空白 | 答复 | 依据 |`
+    #   会把后面那列的备注也当成这一栏的正文（实测摘录尾巴上挂着「……意义上的空白 |」）。
     for k in keys:
-        m = re.search(r"(?m)^\|[^|\n]*" + re.escape(k) + r"[^|\n]*\|([^\n]*)", text)
-        if m and m.group(1).strip():
-            return _clean(m.group(1))
+        for row in re.finditer(r"(?m)^\|([^\n]*)$", text):
+            cells = row.group(1).split("|")
+            for i, cell in enumerate(cells):
+                if k not in cell or not _is_dedicated(cell, k):
+                    continue
+                if i + 1 < len(cells) and cells[i + 1].strip():
+                    return _clean(cells[i + 1])
     return ""
 
 
