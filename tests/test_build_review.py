@@ -182,13 +182,43 @@ def test_cli_missing_file_exits_1(tmp_path):
 # init 产物被自己的校验器判为「未识别的列」。别名必须写成归一化后的形态。
 
 def test_every_alias_matches_its_normalized_form():
-    """所有别名归一化后必须与自身的归一化键一致（否则是死别名）。"""
+    """别名归一化后必须仍在**本规范名**的别名表里（否则是死别名）。
+
+    ⚠️ 这条判据本身很弱：`keys` 是由 `aliases` 自身派生的，断言必然成立，
+    对「别名挂错规范名」无感（2026-10-10 变异测试证实：把「作者要做什么」
+    同时挂到 `rof` 与 `wtd`，本测试照样绿）。真正的不变量见下一条。
+    """
     for canon, aliases in FIELD_ALIASES.items():
         keys = {norm_header(a) for a in aliases}
         for alias in aliases:
             assert norm_header(alias) in keys, (
                 f"{canon} 的别名「{alias}」归一化后不在别名表中，是死别名"
             )
+
+
+def test_no_normalised_key_is_claimed_by_two_canonical_fields():
+    """★同一个归一化表头键**不得**被两个规范名同时认领。
+
+    这才是上面那条测试**该守**的不变量。别名表一旦跨规范名撞键，
+    `resolve_columns` 的解析就退化成「依赖 dict 顺序」——
+    §5.3 里「作者要做什么」（承诺）与「作者实际做了什么」（交付）本就靠
+    两栏分别映射来核对对齐度；撞键后两栏会被合并，对齐度无从读起。
+
+    2026-10-10 变异实测：把「作者要做什么」同时挂到 `rof` 与 `wtd`，
+    旧有的永真测试**全部通过、无人报红**；本测试能抓住。
+    """
+    claims = {}
+    collisions = []
+    for canon, aliases in FIELD_ALIASES.items():
+        for alias in aliases:
+            key = norm_header(alias)
+            owner = claims.setdefault(key, canon)
+            if owner != canon:
+                collisions.append((key, owner, canon))
+    assert not collisions, (
+        "同一归一化键被两个规范名认领（解析将依赖 dict 顺序）：%s"
+        % "；".join("「%s」← %s 与 %s" % c for c in collisions)
+    )
 
 
 def test_init_header_is_fully_recognized(tmp_path):
@@ -231,13 +261,43 @@ def test_boilerplate_prefix_research_yi_is_cut():
     assert words[0] == "新闻价值", f"最高频主题词应为「新闻价值」，实得 {words[:3]}"
 
 
-def test_no_misaligned_fragment_in_top_candidates():
-    """候选列表里不得出现与更高频完整短语仅差一字、且同频的错位切片。"""
-    rows = [{"spl": "混合式教学模式的实践", "rof": "混合式教学改善学习体验",
-             "cpl": "样本单一", "gap": "样本不足"} for _ in range(3)]
-    ranked = [(w, c) for w, c in B.cluster_hint(rows)]
+def test_mark_misaligned_flags_the_offset_fragment_but_keeps_the_full_one():
+    """★`mark_misaligned` 的直接判据：差一字的错位碎片被标出、完整版不被误标。
+
+    此前这条测试写的是「在 `cluster_hint` 的输出上再判一次空」——
+    而 `cluster_hint` 内部**已经**用 `mark_misaligned`（及 `dedupe_ngrams`）
+    过滤过一轮，输出集上再判必然为空：**同义反复**。
+    2026-10-10 变异实测：把 `mark_misaligned` 整个替换成 `return set()`，
+    旧写法照样通过、毫无反应。所以必须**喂进原始候选**直接测。
+
+    样本取「恰好差一字」的错位对（少首字／少尾字各一），
+    正是 docstring 所述「滑窗在重复长短语上切出的缺首字/缺尾字片段」。
+    """
+    full = "深度学习在教学中的应用"
+    offset_tail = full[:-1]     # 少尾字
+    offset_head = full[1:]      # 少首字
+    ranked = [(full, 4), (offset_tail, 4), (offset_head, 4)]
+
     misaligned = B.mark_misaligned(ranked)
-    assert not misaligned, f"候选中仍有错位碎片：{misaligned}"
+    assert misaligned == {offset_tail, offset_head}, (
+        f"差一字的错位碎片必须被标出，实得 {sorted(misaligned)}"
+    )
+    assert full not in misaligned, "完整版被误标为碎片，会把真主题一并压掉"
+
+
+def test_mark_misaligned_keeps_a_genuinely_shorter_lower_count_phrase():
+    """守卫：完整版**频次更高**时碎片要标出；但独立短语（非错位）不得被误标。
+
+    `mark_misaligned` 只在「差一字 + 频次不低于」时判错位。
+    拿一个与任何更长候选都不构成「差一字」关系的短语，必须原样保留。
+    """
+    ranked = [("深度学习在教学中的应用", 8), ("深度学习在教学中", 4),
+              ("研究方法与样本", 4)]
+    misaligned = B.mark_misaligned(ranked)
+    assert "研究方法与样本" not in misaligned, "不相干的独立短语被误判为错位碎片"
+    # 「深度学习在教学中」比完整版少一字且频次更低（4 < 8）：不满足「不低于」，
+    # 故按当前判据不算错位——这条作为**行为快照**记录，防止判据被悄悄放宽。
+    assert "深度学习在教学中" not in misaligned
 
 
 # ---------------------------------------------------------------- --stopwords / --keep 的文件层
@@ -402,15 +462,42 @@ def test_commit_promise_pair_is_both_in_the_spec():
     assert "作者实际做了什么" in SPEC_5_3
 
 
+def _template_header():
+    """读 `assets/rcos-template.csv` 的首行（表头）。"""
+    path = Path(__file__).resolve().parent.parent / "assets" / "rcos-template.csv"
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        return next(csv.reader(fh))
+
+
+def test_shipped_template_header_matches_the_5_3_spec():
+    """★随仓库发布的 `assets/rcos-template.csv` 表头必须与 §5.3 列集逐字一致。
+
+    这是**真去读那个文件**的测试。此前 `test_init_and_shipped_template_agree_on_columns`
+    的 docstring 宣称核对「§5.3 / 模板 / init」三处，函数体却**从不打开模板文件**
+    （名不副实）——模板被改坏也无人报红。2026-10-10 修正。
+    """
+    got = _template_header()
+    assert got == SPEC_5_3, (
+        "assets/rcos-template.csv 的表头与 §5.3 不符（用户拿到的模板会错列）：\n"
+        "  模板：%s\n  §5.3：%s" % (got, SPEC_5_3)
+    )
+
+
 def test_init_and_shipped_template_agree_on_columns(tmp_path):
     """★三处表头必须是同一份：§5.3 文档、`assets/rcos-template.csv`、`init` 生成的。
 
     此前三处各写一份（20／11／11 列），合并与对账时会错列。
+    现在三处**逐一比对**：`init` 产物 vs §5.3，以及 `init` 产物 vs 发布的模板。
     """
     out = tmp_path / "tpl.csv"
     _bm.cmd_init(str(out))
-    got = out.read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+    with out.open(encoding="utf-8-sig", newline="") as fh:
+        got = next(csv.reader(fh))
     assert got == SPEC_5_3, f"init 生成的表头与 §5.3 不符：{got}"
+    assert got == _template_header(), (
+        "init 生成的表头与 assets/rcos-template.csv 不一致——"
+        "用户从模板起步、与 init 起步会得到两种列集"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
