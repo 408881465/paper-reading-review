@@ -615,11 +615,23 @@ def check(path):
                             % (idx, who, ", ".join(label(f) for f in miss)))
 
     if empty_required:
+        # ★只列**真缺**的栏（2026-10-10 修）。此前文案固定拼 `REQUIRED` 四项，
+        #   于是只缺「年份」时也会写「缺少必需栏（作者、年份、现有文献综述、
+        #   研究结果（作者发现了什么））」，并附上「缺研究结果无法做主题聚类」
+        #   这类**用不上**的后果说明——用户会去找根本不缺的那三栏，
+        #   还以综述骨架已经没法做了。后果说明同样按真缺的栏各自触发。
+        really_missing = [f for f in REQUIRED if any(not r.get(f) for r in rows)]
+        hints = []
+        if "rof" in really_missing:
+            hints.append("缺「研究结果（作者发现了什么）」无法做主题聚类")
+        if "spl" in really_missing:
+            hints.append("缺「现有文献综述」无法构建综述骨架")
+        tail = ("%s——请补齐后再生成综述。" % "，".join(hints)) if hints \
+            else "请补齐后再生成综述。"
         problems.append(
-            "%d/%d 篇缺少必需栏（%s）。缺「研究结果（作者发现了什么）」无法做主题聚类，"
-            "缺「现有文献综述」无法构建综述骨架——请补齐后再生成综述。"
+            "%d/%d 篇缺少必需栏（%s）。%s"
             % (empty_required, len(rows),
-               "、".join(label(f) for f in REQUIRED))
+               "、".join(label(f) for f in really_missing), tail)
         )
 
     # 聚类规模检查

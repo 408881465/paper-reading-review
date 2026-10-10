@@ -637,3 +637,49 @@ def test_wtdd_is_recommended_not_required_and_keeps_spec_order():
     rec = list(_bm.RECOMMENDED)
     assert rec.index("wtdd") > rec.index("wtd"), f"§5.3 列序被破坏：{rec}"
     assert _bm.label("wtdd") == "作者实际做了什么"
+
+
+# ------------------------------------------------------------ 缺栏文案
+
+def _missing_required_msg(tmp_path, name, r):
+    path = write_csv(tmp_path / name, [r])
+    _, _, problems, _ = B.check(str(path))
+    return next((p for p in problems if "缺少必需栏" in p), None)
+
+
+def test_missing_required_message_names_only_the_fields_actually_missing(tmp_path):
+    """★缺栏文案只能列出**真的缺**的那几栏，不能固定拼 `REQUIRED` 四项。
+
+    实测踩过：只缺「年份」时（覆盖率表里 年份 0/1、其余必需栏 100%），
+    文案仍写「缺少必需栏（作者、年份、现有文献综述、研究结果（作者发现了什么））」，
+    并附上「缺研究结果无法做主题聚类，缺现有文献综述无法构建综述骨架」——
+    用户会去找**根本不缺**的那三栏，且以为综述骨架已经没法做了。
+    """
+    msg = _missing_required_msg(tmp_path, "only_year.csv",
+                                row(1, "甲", "", "综述", "批评", "空白", "发现"))
+    assert msg, "只缺「年份」时没有报缺栏"
+    assert "年份" in msg
+    for absent in ("作者", "现有文献综述", "研究结果"):
+        assert absent not in msg, f"「{absent}」并未缺失，却出现在缺栏文案里：{msg}"
+
+
+def test_missing_required_message_keeps_the_consequence_for_real_gaps(tmp_path):
+    """★后果说明要与**真实缺的那几栏**对应；未缺的栏不得带出它的后果。"""
+    # 缺「现有文献综述」与「研究结果」两栏
+    msg = _missing_required_msg(tmp_path, "no_spl_rof.csv",
+                                row(1, "甲", "2020", "", "批评", "空白", ""))
+    assert msg
+    assert "现有文献综述" in msg and "研究结果" in msg
+    assert "无法做主题聚类" in msg and "无法构建综述骨架" in msg, \
+        f"真缺了这两栏，后果说明反而没了：{msg}"
+    assert "年份" not in msg, f"「年份」并未缺失，却出现在文案里：{msg}"
+
+
+def test_consequence_hint_is_conditional_on_which_field_is_missing(tmp_path):
+    """★两条后果说明各自独立触发：只缺「研究结果」时不该提「构建综述骨架」。"""
+    msg = _missing_required_msg(tmp_path, "no_rof.csv",
+                                row(1, "甲", "2020", "综述", "批评", "空白", ""))
+    assert msg
+    assert "无法做主题聚类" in msg, f"缺「研究结果」却没提主题聚类：{msg}"
+    assert "无法构建综述骨架" not in msg, \
+        f"「现有文献综述」并未缺失，却给了构建骨架的后果说明：{msg}"
