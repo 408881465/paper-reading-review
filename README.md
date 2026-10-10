@@ -81,6 +81,9 @@ find 03_解码卡 -name '*.md' -print0 | xargs -0 python3 scripts/lint_review.py
 #   已按「规范文档」豁免；其余非成稿请用 `--form doc` 显式跳过。
 
 # .docx 会被 batch_extract 自动接走；也可单独抽（无页码，回指用章节名）
+#   需要细粒度回指时：batch_extract 加 --docx-para-numbers（每段前加 [¶N]），
+#   或单独抽时加 --para-numbers。★两者都默认关闭，且与 --printed-labels
+#   （PDF 印刷页码）各管各的——docx 段号不靠印刷页码那个开关开启。
 python3 scripts/extract_docx_text.py <文件.docx> -o /tmp/policy.txt
 
 # OCR 完的文本回流登记表（否则「需OCR」是条断头的支线）

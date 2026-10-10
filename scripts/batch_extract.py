@@ -374,10 +374,19 @@ def main(argv=None) -> int:
     parser.add_argument("--redo-ocr", action="store_true",
                         help="允许对已 OCR 的图片型文献重新抽文本（默认保护其 OCR 结果）")
     parser.add_argument("--printed-labels", action="store_true",
-                        help="在页码标记后追加推断的印刷页码。**默认关闭**："
+                        help="【只作用于 PDF】在页码标记后追加推断的印刷页码。**默认关闭**："
                              "CNKI 页码常被抽成相邻两个单数字记号（页脚 80 → 记号 0、8），"
                              "只取其一会让整篇偏移差 10 的倍数，标注错误比不标更坏——"
                              "启用前必须用外部信号（页内「下转第 N 页」、期号、与原文对撞）验证")
+    # ★`--docx-para-numbers` 与 `--printed-labels` **必须各管各的**（2026-10-10 修）。
+    #   此前 docx 队列写的是 `with_para_numbers=args.printed_labels`——两个语义无关的
+    #   开关被并成一个旗标：传 .docx 时加 `--printed-labels` 会**顺带**给它加 `[¶N]`
+    #   （PDF 的页码纪律被无理由地施加到 docx 上），而 docx 想单独要段号时**没有开关**。
+    #   docx 无固定页码、回指基准是章节名，`[¶N]` 是它**自己的**细粒度回指辅助。
+    parser.add_argument("--docx-para-numbers", action="store_true",
+                        help="【只作用于 .docx】每段前加 [¶N]，便于细粒度回指。**默认关闭**："
+                             "段号是可选辅助，不该悄悄打开；与 --printed-labels（PDF 印刷页码）"
+                             "是两件不相干的事，各自独立生效")
     parser.add_argument("--no-dup-check", action="store_true",
                         help="跳过「抽取文本一致但文件字节不同」的版本重复检查")
     parser.add_argument("--report", default="", help="提取报告路径（默认 <outdir>/_提取报告.md）")
@@ -593,7 +602,7 @@ def main(argv=None) -> int:
             try:
                 status, pages, chars, msg = extract_one_docx(
                     row["源路径"], out, docx_extractor,
-                    with_para_numbers=args.printed_labels)
+                    with_para_numbers=args.docx_para_numbers)
             except Exception as exc:                                # noqa: BLE001
                 status, pages, chars = "打不开", 0, 0
                 msg = f"抽取时异常（{type(exc).__name__}）：{exc}"
