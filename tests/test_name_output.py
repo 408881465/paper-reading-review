@@ -250,16 +250,23 @@ class TestEnglishTitles:
         assert no._MAIN_LIMIT_LATIN > no._MAIN_LIMIT_CJK
 
     def test_超长英文标题按词边界截断(self):
-        """不切半个单词：`...Interdisciplinary_Accomplishments` 不能变成 `...Interdisciplina`。"""
-        name = no.output_name(
-            "Instructional Design Based on Interdisciplinary Accomplishments "
-            "and Related Theories of Learning Sciences", "Zhong", "A")
-        stem = name[:-len("-导读.md")]
-        assert "_" not in stem.split("_Zhong")[0].split("_")[-1] or True
-        # 主标题段不得以半个单词结尾：最后一段必须是完整词
-        main = stem.rsplit("_Zhong", 1)[0]
-        last_word = main.rsplit("_", 1)[-1]
-        assert len(last_word) >= 2, f"疑似截出残词 {last_word!r}：{main}"
+        """★2026-10-13 补强（盲区 B）：原断言只查「最后段长度≥2」，锁不死残词。
+
+        改用已知词表：截断后**每一段都必须是原词表里的完整词**，且整体是
+        词表的一个顺序前缀——`Interdisciplina` 这类残词会被 `seg in words`
+        直接抓出，而不是靠长度蒙混过关。"""
+        words = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta",
+                 "Theta", "Iota", "Kappa", "Lambda", "Mu", "Nu", "Xi",
+                 "Omicron", "Pi", "Rho", "Sigma", "Tau", "Upsilon", "Phi",
+                 "Chi", "Psi", "Omega"]
+        title = " ".join(words)
+        name = no.output_name(title, "X", "A")
+        main = name[:-len("-导读.md")].rsplit("_X", 1)[0]
+        segs = main.split("_")
+        for seg in segs:
+            assert seg in words, f"截出残词 {seg!r}（不在原词表）：{main}"
+        # 且必须是词表的前 k 个词按序连接，不得乱序或跳词
+        assert main == "_".join(words[:len(segs)]), f"非顺序前缀截断：{main}"
 
     def test_英文标题也能被lint判对形态(self):
         """★联动回归：英文前缀 + 中文后缀，兜底仍须生效。"""
@@ -300,6 +307,21 @@ class TestDegenerate:
 
     def test_下划线不残留在主标题两端(self):
         assert no.output_name("：标题：", "作者", "A") == "标题_作者-导读.md"
+
+    def test_作者名纯标点时作者段退化消失(self):
+        """★2026-10-13 补（盲区 D）：作者名全是标点/符号 → sanitize 后空 →
+        不带 `_作者` 段，文件名仍合法（不得产出 `标题_-导读.md` 这类）。"""
+        assert no.output_name("深度学习导论", "《》·#", "A") == "深度学习导论-导读.md"
+        assert no.output_name("深度学习导论", "***", "A") == "深度学习导论-导读.md"
+
+    def test_作者名空与纯标点结果一致(self):
+        """空作者与纯标点作者应退化到同一形态——两者都让作者段消失。"""
+        assert no.output_name("深度学习导论", "", "A") \
+            == no.output_name("深度学习导论", "《》", "A")
+
+    def test_标题与作者均纯标点_双重退化(self):
+        """最极端组合：主标题退「未命名」、作者段退化消失 → `未命名-导读.md`。"""
+        assert no.output_name("：《》", "《》", "A") == "未命名-导读.md"
 
 
 # ---------------------------------------------------------------- CLI
