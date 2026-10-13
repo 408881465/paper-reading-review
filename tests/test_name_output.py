@@ -325,3 +325,40 @@ class TestCLI:
             no.main(["--title", "T", "--form", "Z"])
         assert ei.value.code == 2
         assert "invalid choice" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- 非拉丁文字保留（盲区 A）
+
+class TestNonLatinKept:
+    """★2026-10-13 补（盲区 A）：扩展白名单后，主要非中英文字不应被静默删除。
+
+    背景：原白名单只有 `[0-9A-Za-z\u4e00-\u9fff_-]`，日文假名、韩文、西里尔、
+    希腊文等会无声消失。用户常引日译专著，遇到日文原著名/作者带假名时字符会丢。
+    此处用真实字符锁住「扩展后不丢」。
+    """
+
+    @pytest.mark.parametrize("title,expected", [
+        ("鈴木みづほの研究", "鈴木みづほの研究"),        # 日文：汉字 + 平假名
+        ("カタカナ教育", "カタカナ教育"),                  # 日文片假名
+        ("박영희의 논문", "박영희의_논문"),                # 韩文（含空格转下划线）
+        ("Выготский 的研究", "Выготский_的研究"),         # 西里尔（俄文）
+        ("Αριστοτέλης 论", "Αριστοτέλης_论"),             # 希腊文
+        ("bopomofo ㄅㄆㄇ", "bopomofo_ㄅㄆㄇ"),            # 注音符号（台港）
+    ])
+    def test_非拉丁文字保留(self, title, expected):
+        assert no.output_name(title, "作者", "A") == f"{expected}_作者-导读.md"
+
+    def test_扩展白名单后仍只查白名单(self):
+        """回归：白名单扩大了，但 `test_文件名不含任何标点残留` 的不变式仍成立——
+        主干里不得出现任何非白名单字符。"""
+        name = no.output_name(
+            "鈴木みづほ의_Выготский 与深度学习", "张", "A")
+        stem = name[:-len(".md")]
+        for ch in stem:
+            assert no._KEEP.match(ch), f"文件名残留非白名单字符 {ch!r}：{name}"
+
+    def test_符号类仍被删(self):
+        """白名单扩了文字，但符号（•★§）仍应删——不能因扩展把符号也放进来。"""
+        name = no.output_name("深度学习 • 前沿★研究", "张", "A")
+        assert "•" not in name and "★" not in name
+        assert name == "深度学习_前沿研究_张-导读.md"
