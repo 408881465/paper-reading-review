@@ -639,7 +639,7 @@ def _single_review(body_reps, ref_count):
 def test_single_review_reference_section_is_excluded_from_the_char_budget():
     """★A 形态的第八节（原文 GB/T 7714 文献表）不得计入字数上限。
 
-    样本：正文 9201 字（低于 10000 上限）＋ 第八节 1800 字。
+    样本：正文 9201 字（低于 16000 上限）＋ 第八节 1800 字。
     合计 11006 → **改前**报「超过 10000 上限」，**改后**只报 9201、不报超限。
     该节是原文的组成、非导读产出，拿它顶上限等于逼作者删原文的参考文献。
     """
@@ -648,15 +648,15 @@ def test_single_review_reference_section_is_excluded_from_the_char_budget():
     assert not [w for w in res["warnings"] if "超过" in w], (
         f"第八节被算进字数上限了：{res['warnings']}"
     )
-    assert res["chars"] <= 10000, f"报出的 chars 仍超上限：{res['chars']}"
+    assert res["chars"] <= 16000, f"报出的 chars 仍超上限：{res['chars']}"
 
 
 def test_excluded_section_does_not_mask_a_genuine_overflow():
     """守卫：排除第八节**不得**掩盖正文本身的超限。
 
-    正文撑到 12000 字（真超限）＋ 第八节 1800 字 → 必须照样报超限。
+    正文撑到 17100 字（真超限，> A 新上限 16000）＋ 第八节 1800 字 → 必须照样报超限。
     """
-    text = _single_review(640, 120)      # 640*19 = 12160
+    text = _single_review(900, 120)      # 900*19 = 17100
     res = lr.lint_text("x.md", text, form="A")
     assert [w for w in res["warnings"] if "超过" in w], (
         "正文真超限却被第八节的排除掩盖了"
