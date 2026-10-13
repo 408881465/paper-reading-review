@@ -64,6 +64,11 @@ python3 scripts/extract_pdf_text.py <pdf> -o /tmp/paper.txt
 python3 scripts/build_review.py init rcos.csv
 python3 scripts/build_review.py rcos rcos.csv
 
+# 产出文件名生成：<论文主标题>_<第一作者>-<形态后缀>.md
+#   冒号转下划线且内容保留；破折号后的副标题省略；英文空格转下划线
+python3 scripts/name_output.py --title "教师教学素养：一个被忽视的研究领域" --author 夏志华 --form A
+#   → 教师教学素养_一个被忽视的研究领域_夏志华-导读.md
+
 # 形态 D：判重与增量同步 → 按登记表批量抽文本 → 成稿机械自检
 python3 scripts/sync_corpus.py scan 文献登记表.csv --source <目录>
 python3 scripts/batch_extract.py --registry 文献登记表.csv --outdir 02_文本/
@@ -147,6 +152,7 @@ paper-reading-review/
 │   ├── batch_extract.py      # 形态 D：按登记表批量抽文本（可中断、可重跑）
 │   ├── lint_review.py        # 自检：缩写残留、字数、空白配依据、洗衣店接衣单、产物卫生
 │   ├── build_review.py       # RCOS 校验 + 主题聚类提示
+│   ├── name_output.py        # 产出文件名：<标题>_<作者>-<形态后缀>.md
 │   └── compare_cards.py      # 协作层：多人独立解码的口径一致性比对
 └── tests/                    # pytest：脚本行为与 SKILL.md 纪律的回归网
 ```
