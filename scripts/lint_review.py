@@ -366,7 +366,12 @@ def section_subtree_text(leveled, i: int) -> str:
 
 def guess_form(path: str, text: str) -> str:
     """判形态：**内容特征优先，文件名兜底**（理由见 _FORM_SIGNATURES 处说明）。"""
-    name = path.rsplit("/", 1)[-1]
+    # ★必须同时按正/反斜杠取文件名：Windows 原生路径用反斜杠，
+    #   若只 rsplit('/')，整条路径会被当成「文件名」，于是**目录名**里若含
+    #   形态关键词（速览／综述／章节／导读…）就会劫持形态判定
+    #   （实测：C:\docs\速览\foo导读.md 被判成 quick、E:\work\章节\z解码卡.md 被判成 chapter-card）。
+    #   形态判错会让后面所有字数区间、必填栏、禁用词全按错的规格检查（见 _FORM_SIGNATURES 注释）。
+    name = re.split(r"[\\/]", path)[-1]
     # 0) 技能自带的说明与模板按「规范文档」处理（路径特征，与内容无关）
     if {"references", "assets"} & set(re.split(r"[\\/]", path)):
         return "doc"

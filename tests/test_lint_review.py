@@ -125,6 +125,22 @@ def test_guess_form_by_filename():
     assert lr.guess_form("文献阅读总报告.md", "") == "report"
 
 
+def test_guess_form_windows_backslash_not_polluted_by_dirname():
+    """Windows 原生反斜杠路径下，目录名里的形态关键词不得劫持文件名兜底判定。
+
+    旧实现 `path.rsplit('/', 1)[-1]` 只按正斜杠切，反斜杠路径整条被当成文件名，
+    于是目录名若含「速览／综述／章节」等词会误判形态——而形态判错会让后面所有
+    字数区间、必填栏、禁用词按错的规格检查。已修：按 [\\\\/] 两种分隔符取基名。
+    """
+    B = chr(92)  # 反斜杠
+    # 目录含「速览」、文件名含「导读」→ 必须判 A，而非被目录词劫持成 quick
+    assert lr.guess_form(B.join(["C:", "docs", "速览", "foo导读.md"]), "") == "A"
+    # 目录含「章节」、文件名含「解码卡」→ 必须判 card，而非 chapter-card
+    assert lr.guess_form(B.join(["E:", "work", "章节", "z解码卡.md"]), "") == "card"
+    # 目录含「综述」、文件名无任何形态词 → 走兜底（B），不被目录词误导
+    assert lr.guess_form(B.join(["D:", "a", "综述", "bar.md"]), "") == "B"
+
+
 def test_merged_question_answer_warns():
     text = "# 综述\n\n张三（2020）研究了校本课程并发现协同有效。\n"
     res = lr.lint_text("x.md", text, form="B", min_chars=0, max_chars=10 ** 9)
